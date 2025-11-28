@@ -67,7 +67,6 @@ class CredmanActivity : CredentialManagerPresentmentActivity() {
 ```
 
 `CredmanActivity` extends `CredentialManagerPresentmentActivity` from the Multipaz library, which provides the core W3C DC API functionality.  
-In this updated version, all dependencies (`PromptModel`, `DocumentTypeRepository`, `PresentmentSource`) are resolved via **Koin dependency injection**, instead of manually accessing a global `App` instance. This class acts as the bridge between the Android system and your wallet's credential presentation logic.
 
 ### **Step 2: Understanding Android Manifest Configuration**
 

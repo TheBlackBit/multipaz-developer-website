@@ -160,15 +160,16 @@ This method creates a JWT header with the signing algorithm and key ID.
 ### **Step 2: Understanding URL Processing**
 
 #### **Examine the URL Handler**
-In App.kt file
+In `composeApp/src/androidMain/.../MainActivity.kt`, URL routing is handled inside the `FragmentActivity`. The activity receives intents (credential offers, app links, custom schemes), inspects their URLs, and forwards them to the appropriate Multipaz components via Koin-injected dependencies:
 
 ```kotlin
-//TODO:    call processAppLinkInvocation(url)
+//TODO: call processAppLinkInvocation(url)
 provisioningSupport.processAppLinkInvocation(url)
 ```
-**Credential Offer URLs**: Start with openid-credential-offer:// or haip://
 
-During provisioning, the app receives a URL from the server, and the client must perform specific processing based on that URL.
+**Credential Offer URLs**: begin with `openid-credential-offer://` or `haip://`
+
+During provisioning, the app receives a URL from the server, and the client must perform specific processing based on that URL. `MainActivity` now centralizes this logic: credential-offer schemes are forwarded to the Compose UI through `credentialOffers`, while app links are passed to `ProvisioningSupport.processAppLinkInvocation(...)` inside a coroutine.
 
 ### **Step 3: Understanding the User Interface**
 
@@ -177,16 +178,16 @@ During provisioning, the app receives a URL from the server, and the client must
 ```kotlin   
 //TODO: update text depends on provisioningState
 val text = when (provisioningState) {
-             ProvisioningModel.Idle -> "Initializing..."
-             ProvisioningModel.Initial -> "Starting provisioning..."
-             ProvisioningModel.Connected -> "Connected to the back-end"
-             ProvisioningModel.ProcessingAuthorization -> "Processing authorization..."
-             ProvisioningModel.ProcessingAuthorization -> "Authorized"
-             ProvisioningModel.RequestingCredentials -> "Requesting credentials..."
-             ProvisioningModel.CredentialsIssued -> "Credentials issued"
-             is ProvisioningModel.Error -> throw IllegalStateException()
-             is ProvisioningModel.Authorizing -> throw IllegalStateException()
-         }
+            ProvisioningModel.Idle -> "Initializing..."
+            ProvisioningModel.Initial -> "Starting provisioning..."
+            ProvisioningModel.Connected -> "Connected to the back-end"
+            ProvisioningModel.ProcessingAuthorization -> "Processing authorization..."
+            ProvisioningModel.Authorized -> "Authorized"
+            ProvisioningModel.RequestingCredentials -> "Requesting credentials..."
+            ProvisioningModel.CredentialsIssued -> "Credentials issued"
+            is ProvisioningModel.Error -> throw IllegalStateException()
+            is ProvisioningModel.Authorizing -> throw IllegalStateException()
+        }
          Text(
              modifier = Modifier
                  .align(Alignment.CenterHorizontally)

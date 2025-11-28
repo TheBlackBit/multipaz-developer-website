@@ -59,13 +59,69 @@ Identity credential provisioning is the process of securely issuing digital cred
 
 #### **1.1 Explore the Project Structure**
 
-First, set your project’s `android:launchMode="singleInstance`  in `AndroidManifest.xml` to prevent unnecessary recompositions, which may otherwise break the issuance process.
+**Project Structure Overview**
 
-**Look for these key files**:
+The following directory structure shows the key files and folders in the `composeApp/src/commonMain/` directory:
 
-* ProvisioningSupport.kt \- Core backend implementation  
-* App.kt \- Main application class  
-* ProvisioningTestScreen.kt \- UI for provisioning
+```text
+composeApp/src/commonMain/
+├── kotlin/
+│   └── org/multipaz/samples/wallet/cmp/
+│       ├── ui/                          # UI Components
+│       │   ├── AccountScreen.kt
+│       │   ├── ProvisioningTestScreen.kt
+│       │   ├── Explore.kt
+│       │   ├── Membership.kt
+│       │   └── HomeScreen.kt
+│       ├── di/                          # Dependency Injection
+│       │   ├── InitKoin.kt
+│       │   └── MultipazModule.kt
+│       ├── util/                        # Utilities
+│       │   ├── AppSettingsModel.kt
+│       │   ├── ProvisioningSupport.kt
+│       │   ├── DocumentStoreExtensions.kt
+│       │   ├── TestAppUtils.kt
+│       │   └── Constants.kt
+│       └── UtopiaSampleApp.kt          # Main app entry
+└── composeResources/                    # Shared resources
+    ├── drawable/                        # Images
+    └── files/                           # Files (certificates, etc.)
+        └── test_app_reader_root_certificate.pem
+```
+
+**Android-specific structure:**
+
+```text
+composeApp/src/androidMain/
+├── kotlin/
+│   └── org/multipaz/samples/wallet/cmp/
+│       ├── MainActivity.kt              # Main activity
+│       ├── NfcActivity.kt               # NFC handling
+│       ├── CredmanActivity.kt           # Credential manager
+│       ├── NdefService.kt               # NDEF message service
+│       └── UtopiaSampleApplication.kt   # Application class
+├── res/                                 # Android resources
+│   ├── drawable/                        # Drawables
+│   ├── drawable-v24/                    # API 24+ drawables
+│   ├── mipmap-*/                        # App icons
+│   ├── values/                          # Values (strings, colors)
+│   └── xml/                             # XML configs
+├── assets/                              # Android assets
+└── AndroidManifest.xml                  # Manifest file
+```
+
+**iOS-specific structure:**
+
+```text
+composeApp/src/iosMain/
+└── kotlin/
+    └── org/multipaz/samples/wallet/cmp/
+        └── MainViewController.kt        # Main view controller
+```
+
+:::note
+First, set your project's `android:launchMode="singleInstance"` in `AndroidManifest.xml` to prevent unnecessary recompositions, which may otherwise break the issuance process.
+:::
 
 #### **1.2 Understand the ProvisioningSupport Class**
 ```kotlin
@@ -122,7 +178,7 @@ During provisioning, the app receives a URL from the server, and the client must
 //TODO: update text depends on provisioningState
 val text = when (provisioningState) {
              ProvisioningModel.Idle -> "Initializing..."
-             ProvisioningModel.Idle -> "Starting provisioning..."
+             ProvisioningModel.Initial -> "Starting provisioning..."
              ProvisioningModel.Connected -> "Connected to the back-end"
              ProvisioningModel.ProcessingAuthorization -> "Processing authorization..."
              ProvisioningModel.ProcessingAuthorization -> "Authorized"

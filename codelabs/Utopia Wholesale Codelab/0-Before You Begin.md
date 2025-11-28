@@ -24,17 +24,24 @@ In this codelab, you’ll build a minimal end-to-end Verifiable Credential flow 
 
 ## **Prerequisites**
 
+* Familiarity with Kotlin Multiplatform (KMP) development
+
+* Experience building user interfaces with Jetpack Compose
+
 * Experience building Android apps in Android Studio
+
+* Basic understanding of building iOS apps with Xcode
 
 * Familiarity with authentication flows (OAuth2, OpenID Connect)
 
 * Basic understanding of Decentralized Identifiers (DIDs) and Verifiable Credentials (VCs)
 
+
 ---
 
 ## **What you’ll learn**
 
-* How to integrate the `multipaz` library in an kmp project
+* How to integrate the `multipaz` library in a KMP project
 
 * How to perform a **Credential Offer** and retrieve metadata
 
@@ -52,12 +59,12 @@ In this codelab, you’ll build a minimal end-to-end Verifiable Credential flow 
 
 * Kotlin 1.8.10+
 
-* XCode for Mac   
+* Xcode for Mac   
 * Internet access for network calls   
-* Setup Xcode(for mac only)  
+* Setup Xcode (for Mac only)  
   * Open Xcode  
   * Open (/Project/iosApp/iosApp.xcodeproj)   
-  * Select iosApp on left Panel  
+  * Select iosApp on left panel  
   * Click Signing\&Capabilities tab  
   * Under Team, select your Apple developer team
 
@@ -79,8 +86,8 @@ In this codelab, you’ll build a minimal end-to-end Verifiable Credential flow 
 You’ll work with these components:
 
 1. **Mobile Wallet App (Android/iOS)**  
-    Retrieves credential offer, obtains credential, and stores locally and verification  
-2. **Verifier App(Verification)**  
+    Retrieves credential offer, obtains credential, and stores locally for verification  
+2. **Verifier App (Verification)**  
    Leverage the existing Verifier App to perform credential verification.
 
 3. **Issuer Server**  

@@ -18,6 +18,8 @@ In this section (Storage folder), you'll set up the components needed to manage 
 
 * `DocumentStore`: A class for storing real-world identity documents.
 
+* `DocumentTypeRepository`: A registry of supported document types (e.g., DrivingLicense, Loyalty) that your wallet can handle.
+
 We'll guide you through configuring these components in your Koin dependency injection module. These components are defined in `MultipazModule.kt` and can be injected wherever needed in your app.
 
 ### **Step 1: Configure `Storage` in Koin**
@@ -72,6 +74,26 @@ single<DocumentStore> {
     ) {}
 }
 ```
+
+### **Step 5: Configure `DocumentTypeRepository` in Koin**
+
+The `DocumentTypeRepository` registers supported document types that your wallet can handle. For this codelab, we'll register `DrivingLicense` and `Loyalty` document types:
+
+```kotlin
+//TODO: define DocumentTypeRepository in Koin module
+single<DocumentTypeRepository> {
+    DocumentTypeRepository().apply {
+        addDocumentType(DrivingLicense.getDocumentType())
+        addDocumentType(Loyalty.getDocumentType())
+    }
+}
+```
+
+**Key points:**
+
+* `DocumentTypeRepository` is configured as a singleton in the Koin module.
+* Document types are registered using `addDocumentType()` for each supported credential type.
+* The repository is used by `DocumentStore` and `PresentmentSource` to identify and handle different credential types.
 
 ### **Using the Components**
 

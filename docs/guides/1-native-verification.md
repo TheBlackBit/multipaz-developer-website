@@ -1,0 +1,739 @@
+---
+title: Native W3C DC Implementation (KMP)
+sidebar_position: 2
+---
+
+# Enable Native W3C Digital Credentials in Your Kotlin Multiplatform App
+
+This native implementation works across both platforms while respecting platform-specific
+requirements:
+
+- **Android**: Uses package name + certificate fingerprint for app identification
+- **iOS**: Uses bundle identifier for app identification
+
+## **Overview**
+
+The native W3C DC implementation allows your Kotlin Multiplatform app to interact with web-based
+verifiers through direct API calls, supporting secure and privacy-preserving credential presentment
+flows on both Android and iOS. To implement this using the Multipaz SDK, these steps are required:
+
+* Implementing the core W3C DC request flow (shared code)
+* Implementing the `getAppToAppOrigin()` function for each platform
+* Setting up cryptographic key management (shared code)
+* Configuring reader trust management for web verifiers (shared code)
+* Integrating the flow into your UI
+
+## **Implementation Steps**
+
+### **1. Initialize Required Components**
+
+Before you can run the W3C DC flow, you need to initialize several shared, long-lived components. These components handle storage, cryptographic operations, trust management, and zero-knowledge proof capabilities required for the W3C DC protocol.
+
+#### **`StorageTable`**
+
+A `StorageTable` provides persistent key/value storage for your app. It's used to store W3C DC reader/verifier key material and other cryptographic keys that need to persist across app sessions.
+
+You can initialize a storage table from platform-specific storage:
+
+```kotlin
+val storage = Platform.nonBackedUpStorage
+val storageTable = storage.getTable(
+    StorageTableSpec(
+        name = "YourAppKeys",
+        supportPartitions = false,
+        supportExpiration = false
+    )
+)
+```
+
+**What it's used for:**
+
+- Storing reader certificates and private keys
+- Persisting cryptographic material across app restarts
+- Maintaining verifier identity between sessions
+
+**Device Security Requirements:**
+
+The W3C DC implementation requires device-level security to be configured to properly protect stored cryptographic material:
+
+- **Android**: Device lock screen must be configured (pattern, PIN, password, or fingerprint)
+- **iOS**: Device lock screen must be configured (Face ID, Touch ID, or passcode)
+
+The app should work correctly when any of these authentication methods are enabled on the device. Without a device lock screen, cryptographic operations may fail or be restricted by the operating system.
+
+#### **`AsymmetricKey.X509Certified` (IACA Key)**
+
+The Issuing Authority Certification Authority (IACA) key material is used to create an issuer trust anchor and generate Document Signing (DS) certificates. This enables your app to verify the authenticity of credentials.
+
+To set up the IACA key:
+
+1. Load your IACA certificate (from resources, file system, or network)
+2. Generate a new Document Signing (DS) private key
+3. Combine them into an `AsymmetricKey.X509CertifiedExplicit`
+4. Generate a DS certificate using `MdocUtil.generateDsCertificate()`
+
+```kotlin
+// Load IACA certificate from resources
+// Place the .pem file in your resources (e.g., src/commonMain/composeResources/files/)
+val iacaCert = X509Cert.fromPem(Res.readBytes("files/iaca_certificate.pem").decodeToString())
+
+// Define certificate validity period
+val now = Clock.System.now()
+val validFrom = now
+val validUntil = now + 365.days
+
+// Generate Document Signing key
+val dsKey = Crypto.createEcPrivateKey(EcCurve.P256)
+
+// Create IACA key with certificate chain
+val iacaKey = AsymmetricKey.X509CertifiedExplicit(
+    certChain = X509CertChain(certificates = listOf(iacaCert)),
+    privateKey = dsKey,
+)
+
+// Generate DS certificate
+val dsCert = MdocUtil.generateDsCertificate(
+    iacaKey = iacaKey,
+    dsKey = dsKey.publicKey,
+    subject = X500Name.fromName(name = "CN=Your DS Key"),
+    serial = ASN1Integer.fromRandom(numBits = 128),
+    validFrom = validFrom,
+    validUntil = validUntil
+)
+```
+
+**Why this matters for W3C DC:**
+
+- Enables credential issuer verification
+- Validates the authenticity of credentials received from verifiers
+- Required for building trust chains in the verification process
+
+**IACA Certificate Files:**
+
+IACA (Issuing Authority Certification Authority) certificates establish the root of trust for credential issuers. They are X.509 certificates in PEM format that you use to verify the authenticity of credentials.
+
+- **File format**: PEM (Privacy-Enhanced Mail) format (`.pem` extension), which is a base64-encoded X.509 certificate
+- **Source**: Obtain from your credential program administrator, issuer, or certificate authority
+- **Loading**: Load from your app's resources/assets or obtain from a trusted source
+- **Usage**: Parse using `X509Cert.fromPem()` which expects a PEM-formatted string
+
+```kotlin
+// Example: Loading IACA certificate from resources
+// Place the .pem file in: src/commonMain/composeResources/files/
+val iacaCert = X509Cert.fromPem(Res.readBytes("files/iaca_certificate.pem").decodeToString())
+
+// Alternative: If you have the certificate as a String already
+val iacaCertString = """
+    -----BEGIN CERTIFICATE-----
+    MIIE...
+    -----END CERTIFICATE-----
+""".trimIndent()
+val iacaCert = X509Cert.fromPem(iacaCertString)
+```
+
+#### **`CompositeTrustManager` (Issuer Trust)**
+
+A trust manager is used to verify issuer certificate chains (determining which issuers are trusted). You can build a composite trust manager that combines multiple trust sources.
+
+A common setup includes:
+
+- A local trust manager for your own issuer certificates
+- A `VicalTrustManager` loaded from signed VICAL files (ISO/IEC 23220-4 standard)
+
+```kotlin
+// Create local trust manager
+val builtInIssuerTrustManager = TrustManagerLocal(
+    storage = EphemeralStorage(),
+    partitionId = "BuiltInTrustedIssuers",
+    identifier = "Built-in Trusted Issuers"
+)
+
+// Add your issuer certificate to the trust manager
+builtInIssuerTrustManager.addX509Cert(
+    certificate = iacaKey.certChain.certificates.first(),
+    metadata = TrustMetadata(displayName = "Your Trusted Issuer"),
+)
+
+// Load VICAL trust manager (optional, for standardized trust lists)
+// VICAL files contain signed trust lists following ISO/IEC 23220-4 standard
+// Load the file from your app's resources or assets
+val vicalFileBytes = Res.readBytes("files/ISO_SC17WG10_Wellington_Test_Event_Nov_2025.vical")
+val signedVical = SignedVical.parse(vicalFileBytes)
+val vicalTrustManager = VicalTrustManager(signedVical)
+
+// Combine multiple trust managers
+val issuerTrustManager = CompositeTrustManager(
+    listOf(builtInIssuerTrustManager, vicalTrustManager)
+)
+```
+
+**What it's used for:**
+
+- Validating credential issuer authenticity
+- Building trust relationships with credential issuers
+- Supporting both custom and standardized trust lists
+
+**VICAL Files:**
+
+VICAL (Verifiable Issuer Certificate Authority List) files are standardized trust lists that contain signed issuer certificates. They follow the ISO/IEC 23220-4 standard and allow you to trust multiple issuers through a single signed file.
+
+- **File format**: Binary VICAL format (`.vical` extension)
+- **Source**: Obtain from ISO/IEC working groups, credential program administrators, or trusted third parties
+- **Loading**: Load from your app's resources/assets or download from a trusted source
+- **Usage**: Parse the file using `SignedVical.parse()` and pass it to `VicalTrustManager`
+
+```kotlin
+// Example: Loading VICAL file from resources
+// Place the .vical file in your resources (e.g., src/commonMain/composeResources/files/)
+val vicalFileBytes = Res.readBytes("files/ISO_SC17WG10_Wellington_Test_Event_Nov_2025.vical")
+val signedVical = SignedVical.parse(vicalFileBytes)
+```
+
+#### **`ZkSystemRepository`**
+
+A repository for Zero-Knowledge Proof (ZKP) system specifications and circuits. These enable privacy-preserving credential verification where you can prove properties about credentials without revealing the actual data values.
+
+To initialize a ZKP system repository:
+
+1. Create a ZKP system (e.g., `LongfellowZkSystem()`)
+2. Load circuit files into the system
+3. Add the system to the repository
+
+```kotlin
+val longfellowSystem = LongfellowZkSystem()
+
+// List of Longfellow circuit files to load
+// These are pre-computed cryptographic circuits with hash-based filenames
+val longfellowCircuitFiles = listOf(
+    "files/longfellow-libzk-v1/6_1_4096_2945_137e5a75ce72735a37c8a72da1a8a0a5df8d13365c2ae3d2c2bd6a0e7197c7c6",
+    "files/longfellow-libzk-v1/6_2_4025_2945_b4bb6f01b7043f4f51d8302a30b36e3d4d2d0efc3c24557ab9212ad524a9764e",
+    "files/longfellow-libzk-v1/6_3_4121_2945_b2211223b954b34a1081e3fbf71b8ea2de28efc888b4be510f532d6ba76c2010",
+    "files/longfellow-libzk-v1/6_4_4283_2945_c70b5f44a1365c53847eb8948ad5b4fdc224251a2bc02d958c84c862823c49d6",
+)
+
+// Load circuit files from resources
+for (circuitFile in longfellowCircuitFiles) {
+    val circuitBytes = Res.readBytes(circuitFile)
+    val circuitName = circuitFile.substringAfterLast('/')
+    longfellowSystem.addCircuit(circuitName, ByteString(circuitBytes))
+}
+
+val zkSystemRepository = ZkSystemRepository().apply {
+    add(longfellowSystem)
+}
+```
+
+**What it's used for:**
+
+- Enabling zero-knowledge proof verification
+- Supporting privacy-preserving credential checks (e.g., "age > 21" without revealing birthdate)
+- Optional but recommended for enhanced privacy features
+
+**ZKP Circuit Files:**
+
+Circuit files are pre-computed cryptographic circuits that define the logic for zero-knowledge proofs. The Longfellow ZKP system uses multiple circuit files, each with a hash-based filename that uniquely identifies the circuit.
+
+**Understanding Circuit File Names:**
+
+The Longfellow circuit filenames follow a pattern: `{version}_{max_bits}_{hash_length}_{circuit_hash}`
+
+For example: `6_1_4096_2945_137e5a75ce72735a37c8a72da1a8a0a5df8d13365c2ae3d2c2bd6a0e7197c7c6`
+- `6_1`: Version and variant identifier
+- `4096`: Maximum number of bits supported
+- `2945`: Hash length in bits
+- `137e5a75...`: SHA-256 hash of the circuit content (verification)
+
+**Obtaining Circuit Files:**
+
+- **Source**: Download from the Longfellow library or credential program administrators
+- **Location**: Place circuit files in your app's resources (e.g., `src/commonMain/composeResources/files/longfellow-libzk-v1/`)
+- **Format**: Binary circuit files (the hash in the filename verifies file integrity)
+- **Required**: You need all listed circuit files for full ZKP functionality
+
+**Loading from Resources:**
+
+```kotlin
+// Example: Loading Longfellow circuits from app resources
+// Files should be placed in: src/commonMain/composeResources/files/longfellow-libzk-v1/
+val circuitBytes = Res.readBytes("files/longfellow-libzk-v1/6_1_4096_2945_...")
+```
+
+### **2. Understand the Core W3C DC Request Flow**
+
+The W3C Digital Credentials flow involves several cryptographic operations and network requests.
+Here's the core implementation:
+
+```kotlin
+suspend fun requestCredentialFromVerifier(
+    appReaderKey: AsymmetricKey.X509Compatible,
+    request: DocumentCannedRequest,
+    protocol: RequestProtocol,
+    format: CredentialFormat,
+    zkSystemRepository: ZkSystemRepository
+): DigitalCredentialResponse {
+    
+    // Step 1: Generate cryptographic materials
+    val nonce = ByteString(Random.Default.nextBytes(16))
+    val responseEncryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
+    
+    // Step 2: Get platform-specific app origin
+    val origin = getAppToAppOrigin()
+    val clientId = "web-origin:$origin"
+    
+    // Step 3: Build list of requested claims
+    val claims = mutableListOf<MdocRequestedClaim>()
+    request.mdocRequest!!.namespacesToRequest.forEach { namespaceRequest ->
+        namespaceRequest.dataElementsToRequest.forEach { (mdocDataElement, intentToRetain) ->
+            claims.add(
+                MdocRequestedClaim(
+                    namespaceName = namespaceRequest.namespace,
+                    dataElementName = mdocDataElement.attribute.identifier,
+                    intentToRetain = intentToRetain
+                )
+            )
+        }
+    }
+    
+    // Step 4: Build the W3C DC request
+    val dcRequestObject = VerificationUtil.generateDcRequestMdoc(
+        exchangeProtocols = protocol.exchangeProtocolNames,
+        docType = request.mdocRequest!!.docType,
+        claims = claims,
+        nonce = nonce,
+        origin = origin,
+        clientId = clientId,
+        responseEncryptionKey = responseEncryptionKey.publicKey,
+        readerAuthenticationKey = if (protocol.signRequest) {
+            appReaderKey  // Sign request to prove verifier identity
+        } else {
+            null
+        },
+        zkSystemSpecs = if (request.mdocRequest!!.useZkp) {
+            zkSystemRepository.getAllZkSystemSpecs()
+        } else {
+            emptyList()
+        }
+    )
+    
+    // Step 5: Send request via W3C DC API
+    val dcResponseObject = DigitalCredentials.Default.request(dcRequestObject)
+    
+    // Step 6: Decrypt and parse response
+    val dcResponse = VerificationUtil.decryptDcResponse(
+        response = dcResponseObject,
+        nonce = nonce,
+        origin = origin,
+        responseEncryptionKey = AsymmetricKey.anonymous(
+            privateKey = responseEncryptionKey,
+            algorithm = responseEncryptionKey.curve.defaultKeyAgreementAlgorithm
+        )
+    )
+    
+    return dcResponse
+}
+```
+
+**What does this do?**
+
+* **Step 1**: Generates a random nonce (prevents replay attacks) and creates an ephemeral encryption
+  key for the response
+* **Step 2**: Gets the platform-specific app identifier (Android: package + cert, iOS: bundle ID)
+* **Step 3**: Extracts the specific data elements (claims) being requested from the credential
+* **Step 4**: Builds the W3C DC request object with all necessary parameters
+* **Step 5**: Sends the request to the verifier server via the W3C DC API
+* **Step 6**: Decrypts the response using the ephemeral key and validates it
+
+Refer to
+the [W3CDCCredentialsRequestButton implementation](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L428-L536)
+for the complete reference implementation.
+
+### **3. Set Up Reader Certificates**
+
+Before making requests, you need to initialize reader certificates that authenticate your app as a
+verifier:
+
+```kotlin
+suspend fun initializeReaderKeys(
+    keyStorage: StorageTable
+): AsymmetricKey.X509Certified {
+    val certsValidFrom = LocalDate.parse("2024-12-01").atStartOfDayIn(TimeZone.UTC)
+    val certsValidUntil = LocalDate.parse("2034-12-01").atStartOfDayIn(TimeZone.UTC)
+
+    // Initialize reader root certificate (CA)
+    val readerRootKey = initReaderRootCertificate(
+        keyStorage = keyStorage,
+        certsValidFrom = certsValidFrom,
+        certsValidUntil = certsValidUntil
+    )
+
+    // Initialize reader certificate (operational key)
+    val readerKey = initReaderCertificate(
+        keyStorage = keyStorage,
+        readerRootKey = readerRootKey,
+        certsValidFrom = certsValidFrom,
+        certsValidUntil = certsValidUntil
+    )
+
+    return readerKey
+}
+
+private suspend fun initReaderCertificate(
+    keyStorage: StorageTable,
+    readerRootKey: AsymmetricKey.X509CertifiedExplicit,
+    certsValidFrom: Instant,
+    certsValidUntil: Instant
+): AsymmetricKey.X509Certified {
+    // Try to retrieve existing key, or generate new one
+    val readerPrivateKey = keyStorage.get("readerKey")
+        ?.let { EcPrivateKey.fromDataItem(Cbor.decode(it.toByteArray())) }
+        ?: run {
+            val key = Crypto.createEcPrivateKey(EcCurve.P256)
+            keyStorage.insert("readerKey", ByteString(Cbor.encode(key.toDataItem())))
+            key
+        }
+
+    // Try to retrieve existing certificate, or generate new one
+    val readerCert = keyStorage.get("readerCert")?.let {
+        X509Cert.fromDataItem(Cbor.decode(it.toByteArray()))
+    } ?: run {
+        val cert = MdocUtil.generateReaderCertificate(
+            readerRootKey = readerRootKey,
+            readerKey = readerPrivateKey.publicKey,
+            subject = X500Name.fromName("CN=My App Verifier"),
+            serial = ASN1Integer.fromRandom(numBits = 128),
+            validFrom = certsValidFrom,
+            validUntil = certsValidUntil,
+        )
+        keyStorage.insert("readerCert", ByteString(Cbor.encode(cert.toDataItem())))
+        cert
+    }
+
+    return AsymmetricKey.X509CertifiedExplicit(
+        certChain = X509CertChain(listOf(readerCert) + readerRootKey.certChain.certificates),
+        privateKey = readerPrivateKey
+    )
+}
+
+private suspend fun initReaderRootCertificate(
+    keyStorage: StorageTable,
+    certsValidFrom: Instant,
+    certsValidUntil: Instant
+): AsymmetricKey.X509CertifiedExplicit {
+    // Similar implementation for root certificate
+    // See full example in W3CDCCredentialsRequestButton.kt
+    // ...
+}
+```
+
+**What does this do?**
+
+* Creates or retrieves reader certificates from persistent storage
+* Reader root certificate acts as a self-signed CA
+* Reader certificate is signed by the root and used for actual requests
+* Certificates are cached to avoid regenerating on every request
+
+**Key Concepts:**
+
+* **Reader Root Certificate**: The "root of trust" for your verifier app (like a CA)
+* **Reader Certificate**: The operational certificate used to sign credential requests
+* **Certificate Chain**: Links your reader cert back to the root cert for validation
+* **Persistent Storage**: Keys are stored so they persist across app sessions
+
+Refer to
+the [reader initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L311-L426)
+for complete implementation.
+
+### **4. Implement getAppToAppOrigin() for Each Platform**
+
+The `getAppToAppOrigin()` function provides a unique identifier for your app. This is a
+**platform-specific implementation** because Android and iOS use different mechanisms for app
+identification.
+
+First, define the common interface in your shared code:
+
+```kotlin
+// composeApp/src/commonMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt
+expect fun getAppToAppOrigin(): String
+```
+
+#### **Android Implementation**
+
+On Android, the app origin combines the package name with the SHA-256 fingerprint of the app's
+signing certificate:
+
+```kotlin
+// composeApp/src/androidMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt
+@Suppress("DEPRECATION")
+actual fun getAppToAppOrigin(): String {
+    val packageInfo = applicationContext.packageManager
+        .getPackageInfo(applicationContext.packageName, PackageManager.GET_SIGNATURES)
+    return getAppOrigin(packageInfo.signatures!![0].toByteArray())
+}
+```
+
+**How it works on Android:**
+
+- Retrieves the app's signing certificate from the package manager
+- Extracts the certificate's SHA-256 fingerprint
+- Uses the Multipaz `getAppOrigin()` utility to format it properly
+- Results in a unique identifier based on both package name and certificate
+
+**Why certificate fingerprint?**
+
+- Prevents package name spoofing (multiple apps can't share the same package + cert combination)
+- Standard security practice on Android
+- Ties the app identity to the developer's signing key
+
+#### **iOS Implementation**
+
+On iOS, the app origin uses the bundle identifier:
+
+```kotlin
+// composeApp/src/iosMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt
+actual fun getAppToAppOrigin(): String {
+    // On iOS, use the bundle identifier as the app origin
+    // This uniquely identifies the app and is the iOS equivalent
+    // of using the signing certificate on Android
+    return NSBundle.mainBundle.bundleIdentifier ?: "unknown.bundle.id"
+}
+```
+
+**How it works on iOS:**
+
+- Retrieves the bundle identifier from the app's Info.plist
+- Returns the unique identifier (e.g., `com.company.appname`)
+- Falls back to "unknown.bundle.id" if unavailable
+
+**Why bundle identifier?**
+
+- iOS apps don't expose signing certificates at runtime like Android does
+- Bundle identifiers are:
+    - Unique to your app in the Apple ecosystem
+    - Required for App Store distribution
+    - Used by iOS for app identification
+    - The standard way to identify iOS apps
+
+#### **Platform Comparison**
+
+| Aspect       | Android                       | iOS                              |
+|--------------|-------------------------------|----------------------------------|
+| **Method**   | Certificate fingerprint       | Bundle identifier                |
+| **Format**   | Package name + SHA-256 hash   | com.company.appname              |
+| **Security** | Based on signing key          | Based on Apple developer account |
+| **Example**  | `com.example.app:A1:B2:C3...` | `com.example.app`                |
+| **Access**   | Runtime via PackageManager    | Runtime via NSBundle             |
+
+**What does this do?**
+
+* Provides a unique origin identifier required by the W3C Digital Credentials specification
+* Used in the `clientId` field of credential requests
+* Helps verifiers identify which app is requesting credentials
+* Ensures consistent app identification across both platforms
+
+**Reference Links:**
+
+- [Android GetAppOrigin.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/androidMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt)
+- [iOS GetAppOrigin.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/iosMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt)
+- [Common GetAppOrigin.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt)
+
+### **5. Configure Platform-Specific Identifiers**
+
+#### **Android: AndroidManifest.xml**
+
+Your Android app's package name is defined in the manifest:
+
+```xml
+<!-- composeApp/src/androidMain/AndroidManifest.xml -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.multipaz.getstarted">
+    
+    <application
+        android:name=".MultipazGettingStartedApplication"
+        android:label="Multipaz Getting Started">
+        <!-- ... -->
+    </application>
+</manifest>
+```
+
+The certificate fingerprint comes from your signing key (configured in Gradle or generated during
+build).
+
+#### **iOS: Info.plist**
+
+Your iOS app's bundle identifier is defined in Info.plist:
+
+```xml
+<!-- iosApp/iosApp/Info.plist -->
+<plist version="1.0">
+<dict>
+    <!-- Your app's unique bundle identifier -->
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    
+    <!-- Other required keys... -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Bluetooth permission is required for proximity presentations</string>
+</dict>
+</plist>
+```
+
+**What does this do?**
+
+* Defines platform-specific app identifiers
+* Used by `getAppToAppOrigin()` to identify your app to verifiers
+* Required for app distribution on both platforms
+
+Refer to
+the [Info.plist file](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/iosApp/iosApp/Info.plist)
+for iOS context.
+
+### **6. Update Reader Trust Manager**
+
+Configure your app to trust specific verifier applications and their reader certificates. This is **shared code** that works on both platforms:
+
+```kotlin
+// Initialize trust manager
+val readerTrustManager = TrustManagerLocal(
+    storage = storage, 
+    identifier = "reader"
+)
+
+// Add trust for verifier applications
+try {
+    readerTrustManager.addX509Cert(
+        certificate = X509Cert.fromPem(
+            readerRootCertBytes.decodeToString()
+        ),
+        metadata = TrustMetadata(
+            displayName = "Trusted Verifier Name",
+            privacyPolicyUrl = "https://verifier.example.com"
+        )
+    )
+} catch (e: TrustPointAlreadyExistsException) {
+    // Certificate already exists, ignore
+    e.printStackTrace()
+}
+```
+
+**What does this do?**
+
+* Establishes trust for specific verifier applications
+* Ensures your app only responds to trusted verifiers
+* Prevents unauthorized applications from accessing credential data
+* **Works identically on both Android and iOS**
+
+**Required Certificate Files:**
+
+Download these certificate files and add them to `/src/commonMain/composeResources/files`:
+
+* [reader_root_cert_multipaz_testapp.pem](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/reader_root_cert_multipaz_testapp.pem)
+* [reader_root_cert_multipaz_web_verifier.pem](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/reader_root_cert_multipaz_web_verifier.pem)
+
+Refer
+to [the trust manager initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L162-L249)
+for complete implementation.
+
+### **7. Integrate Into Your UI**
+
+Now that you understand the core implementation, you can integrate it into your app's UI. Here's how
+to call the credential request flow:
+
+```kotlin
+@Composable
+fun MyCredentialSharingScreen(app: App) {
+    val coroutineScope = rememberCoroutineScope()
+    
+    Button(onClick = {
+        coroutineScope.launch {
+            try {
+                // Initialize reader keys
+                val readerKey = initializeReaderKeys(app.storageTable)
+                
+                // Define what credential data to request
+                val request = DrivingLicense.getDocumentType().cannedRequests.first()
+                
+                // Make the W3C DC request
+                val response = requestCredentialFromVerifier(
+                    appReaderKey = readerKey,
+                    request = request,
+                    protocol = RequestProtocol.W3C_DC_OPENID4VP_29,
+                    format = CredentialFormat.ISO_MDOC,
+                    zkSystemRepository = app.zkSystemRepository
+                )
+                
+                // Handle the response
+                when (response) {
+                    is MdocApiDcResponse -> {
+                        // Process mDoc format response
+                        processDeviceResponse(response.deviceResponse)
+                    }
+                    is OpenID4VPDcResponse -> {
+                        // Process OpenID4VP format response
+                        processVpToken(response.vpToken)
+                    }
+                }
+            } catch (e: Exception) {
+                Logger.e("W3CDC", "Error requesting credentials", e)
+                // Show error to user
+            }
+        }
+    }) {
+        Text("Share Credential with Verifier")
+    }
+}
+```
+
+**What does this do?**
+
+* Creates a button that triggers the W3C DC flow
+* Initializes reader keys on demand
+* Specifies which credential type and data elements to request
+* Handles both mDoc and OpenID4VP response formats
+* Provides error handling for network/crypto failures
+
+**For Testing/Demo:**
+
+The sample app includes a pre-built `W3CDCCredentialsRequestButton` that implements all of this for
+you:
+
+```kotlin
+// For testing/demo purposes only
+W3CDCCredentialsRequestButton(
+    promptModel = App.promptModel,
+    storageTable = app.storageTable,
+    zkSystemRepository = app.zkSystemRepository,
+    showResponse = { vpToken, deviceResponse, sessionTranscript, nonce, eReaderKey, metadata ->
+        // Handle response
+    }
+)
+```
+
+This button is useful for testing but in production you should implement the flow yourself as shown
+above to have full control over the UX and error handling.
+
+#### **Demo Screenshots**
+
+<div style={{display: 'flex', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px'}}>
+  <div style={{width: '22%', minWidth: 120, textAlign: 'center'}}>
+    <img src="/img/dc_native_1.png" alt="Step 1: Credential Request in Browser" style={{width: '100%', borderRadius: 6}} />
+    <div style={{fontSize: '0.9em', marginTop: 4}}>Step 1</div>
+  </div>
+  <div style={{width: '22%', minWidth: 120, textAlign: 'center'}}>
+    <img src="/img/dc_native_2.png" alt="Step 2: Credential Selection in App" style={{width: '100%', borderRadius: 6}} />
+    <div style={{fontSize: '0.9em', marginTop: 4}}>Step 2</div>
+  </div>
+  <div style={{width: '22%', minWidth: 120, textAlign: 'center'}}>
+    <img src="/img/dc_native_3.png" alt="Step 3: Credential Sent to Verifier" style={{width: '100%', borderRadius: 6}} />
+    <div style={{fontSize: '0.9em', marginTop: 4}}>Step 3</div>
+  </div>
+  <div style={{width: '22%', minWidth: 120, textAlign: 'center'}}>
+    <img src="/img/dc_native_4.png" alt="Step 4: Verified Credential Displayed" style={{width: '100%', borderRadius: 6}} />
+    <div style={{fontSize: '0.9em', marginTop: 4}}>Step 4</div>
+  </div>
+</div>
+
+
+Refer
+to [HomeScreen.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/HomeScreen.kt#L186-L208)
+to see the demo button usage.
+

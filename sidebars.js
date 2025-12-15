@@ -73,8 +73,9 @@ const sidebars = {
       },
       items: [
         "guides/web-verification",
-        "guides/facenet",
-        "guides/dcql"
+        "guides/native-verification",
+        "guides/dcql",
+        "guides/facenet"
       ],
       collapsed: false,
       collapsible: true,

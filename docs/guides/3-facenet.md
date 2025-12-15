@@ -1,6 +1,6 @@
 ---
 title: Face Detection & Verification
-sidebar_position: 2
+sidebar_position: 4
 ---
 
 This guide shows how to add on-device face detection and verification to the Multipaz Getting Started Sample using FaceNet. You'll enable camera permissions, capture a selfie, compute a FaceNet embedding, and then match it in real time against faces detected from the camera.

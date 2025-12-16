@@ -5,20 +5,22 @@ sidebar_position: 2
 
 # Enable Native W3C Digital Credentials in Your Kotlin Multiplatform App
 
-This native implementation works across both platforms while respecting platform-specific
-requirements:
+:::warning iOS Support Coming Soon
+Native W3C DC implementation is currently **only supported on Android**. iOS support will be available soon.
+:::
+
+This native implementation works on Android and uses platform-specific requirements:
 
 - **Android**: Uses package name + certificate fingerprint for app identification
-- **iOS**: Uses bundle identifier for app identification
 
 ## **Overview**
 
-The native W3C DC implementation allows your Kotlin Multiplatform app to interact with web-based
+The native W3C DC implementation allows your Android app to interact with web-based
 verifiers through direct API calls, supporting secure and privacy-preserving credential presentment
-flows on both Android and iOS. To implement this using the Multipaz SDK, these steps are required:
+flows. To implement this using the Multipaz SDK, these steps are required:
 
 * Implementing the core W3C DC request flow (shared code)
-* Implementing the `getAppToAppOrigin()` function for each platform
+* Implementing the `getAppToAppOrigin()` function for Android
 * Setting up cryptographic key management (shared code)
 * Configuring reader trust management for web verifiers (shared code)
 * Integrating the flow into your UI
@@ -57,7 +59,6 @@ val storageTable = storage.getTable(
 The W3C DC implementation requires device-level security to be configured to properly protect stored cryptographic material:
 
 - **Android**: Device lock screen must be configured (pattern, PIN, password, or fingerprint)
-- **iOS**: Device lock screen must be configured (Face ID, Touch ID, or passcode)
 
 The app should work correctly when any of these authentication methods are enabled on the device. Without a device lock screen, cryptographic operations may fail or be restricted by the operating system.
 
@@ -337,7 +338,7 @@ suspend fun requestCredentialFromVerifier(
 
 * **Step 1**: Generates a random nonce (prevents replay attacks) and creates an ephemeral encryption
   key for the response
-* **Step 2**: Gets the platform-specific app identifier (Android: package + cert, iOS: bundle ID)
+* **Step 2**: Gets the platform-specific app identifier (Android: package + certificate fingerprint)
 * **Step 3**: Extracts the specific data elements (claims) being requested from the credential
 * **Step 4**: Builds the W3C DC request object with all necessary parameters
 * **Step 5**: Sends the request to the verifier server via the W3C DC API
@@ -443,20 +444,13 @@ Refer to
 the [reader initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L311-L426)
 for complete implementation.
 
-### **4. Implement getAppToAppOrigin() for Each Platform**
+### **4. Implement getAppToAppOrigin() for Android**
 
-The `getAppToAppOrigin()` function provides a unique identifier for your app. This is a
-**platform-specific implementation** because Android and iOS use different mechanisms for app
-identification.
+The `getAppToAppOrigin()` function provides a unique identifier for your app on Android.
 
-First, define the common interface in your shared code:
-
-```kotlin
-// composeApp/src/commonMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt
-expect fun getAppToAppOrigin(): String
-```
-
-#### **Android Implementation**
+:::note iOS Support Coming Soon
+iOS support for `getAppToAppOrigin()` is not yet available but will be coming soon. This implementation is currently Android-only.
+:::
 
 On Android, the app origin combines the package name with the SHA-256 fingerprint of the app's
 signing certificate:
@@ -464,14 +458,14 @@ signing certificate:
 ```kotlin
 // composeApp/src/androidMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt
 @Suppress("DEPRECATION")
-actual fun getAppToAppOrigin(): String {
+fun getAppToAppOrigin(): String {
     val packageInfo = applicationContext.packageManager
         .getPackageInfo(applicationContext.packageName, PackageManager.GET_SIGNATURES)
     return getAppOrigin(packageInfo.signatures!![0].toByteArray())
 }
 ```
 
-**How it works on Android:**
+**How it works:**
 
 - Retrieves the app's signing certificate from the package manager
 - Extracts the certificate's SHA-256 fingerprint
@@ -484,59 +478,21 @@ actual fun getAppToAppOrigin(): String {
 - Standard security practice on Android
 - Ties the app identity to the developer's signing key
 
-#### **iOS Implementation**
-
-On iOS, the app origin uses the bundle identifier:
-
-```kotlin
-// composeApp/src/iosMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt
-actual fun getAppToAppOrigin(): String {
-    // On iOS, use the bundle identifier as the app origin
-    // This uniquely identifies the app and is the iOS equivalent
-    // of using the signing certificate on Android
-    return NSBundle.mainBundle.bundleIdentifier ?: "unknown.bundle.id"
-}
-```
-
-**How it works on iOS:**
-
-- Retrieves the bundle identifier from the app's Info.plist
-- Returns the unique identifier (e.g., `com.company.appname`)
-- Falls back to "unknown.bundle.id" if unavailable
-
-**Why bundle identifier?**
-
-- iOS apps don't expose signing certificates at runtime like Android does
-- Bundle identifiers are:
-    - Unique to your app in the Apple ecosystem
-    - Required for App Store distribution
-    - Used by iOS for app identification
-    - The standard way to identify iOS apps
-
-#### **Platform Comparison**
-
-| Aspect       | Android                       | iOS                              |
-|--------------|-------------------------------|----------------------------------|
-| **Method**   | Certificate fingerprint       | Bundle identifier                |
-| **Format**   | Package name + SHA-256 hash   | com.company.appname              |
-| **Security** | Based on signing key          | Based on Apple developer account |
-| **Example**  | `com.example.app:A1:B2:C3...` | `com.example.app`                |
-| **Access**   | Runtime via PackageManager    | Runtime via NSBundle             |
-
 **What does this do?**
 
 * Provides a unique origin identifier required by the W3C Digital Credentials specification
 * Used in the `clientId` field of credential requests
 * Helps verifiers identify which app is requesting credentials
-* Ensures consistent app identification across both platforms
 
 **Reference Links:**
 
 - [Android GetAppOrigin.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/androidMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt)
-- [iOS GetAppOrigin.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/iosMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt)
-- [Common GetAppOrigin.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt)
 
-### **5. Configure Platform-Specific Identifiers**
+### **5. Configure Android App Identifier**
+
+:::note iOS Support Coming Soon
+iOS configuration is not yet available. Native W3C DC is currently only supported on Android, with iOS support coming soon.
+:::
 
 #### **Android: AndroidManifest.xml**
 
@@ -558,34 +514,11 @@ Your Android app's package name is defined in the manifest:
 The certificate fingerprint comes from your signing key (configured in Gradle or generated during
 build).
 
-#### **iOS: Info.plist**
-
-Your iOS app's bundle identifier is defined in Info.plist:
-
-```xml
-<!-- iosApp/iosApp/Info.plist -->
-<plist version="1.0">
-<dict>
-    <!-- Your app's unique bundle identifier -->
-    <key>CFBundleIdentifier</key>
-    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-    
-    <!-- Other required keys... -->
-    <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>Bluetooth permission is required for proximity presentations</string>
-</dict>
-</plist>
-```
-
 **What does this do?**
 
-* Defines platform-specific app identifiers
+* Defines the Android app identifier
 * Used by `getAppToAppOrigin()` to identify your app to verifiers
-* Required for app distribution on both platforms
-
-Refer to
-the [Info.plist file](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/iosApp/iosApp/Info.plist)
-for iOS context.
+* Required for Android app distribution
 
 ### **6. Update Reader Trust Manager**
 
@@ -620,7 +553,7 @@ try {
 * Establishes trust for specific verifier applications
 * Ensures your app only responds to trusted verifiers
 * Prevents unauthorized applications from accessing credential data
-* **Works identically on both Android and iOS**
+* **Works on Android** (iOS support coming soon)
 
 **Required Certificate Files:**
 

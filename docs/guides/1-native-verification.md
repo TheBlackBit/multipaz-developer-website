@@ -15,14 +15,13 @@ This native implementation works on Android and uses platform-specific requireme
 
 ## **Overview**
 
-The native W3C DC implementation allows your Android app to interact with web-based
-verifiers through direct API calls, supporting secure and privacy-preserving credential presentment
+The native W3C DC implementation allows your Android app to interact with verifiers through direct API calls, supporting secure and privacy-preserving credential presentment
 flows. To implement this using the Multipaz SDK, these steps are required:
 
 * Implementing the core W3C DC request flow (shared code)
 * Implementing the `getAppToAppOrigin()` function for Android
 * Setting up cryptographic key management (shared code)
-* Configuring reader trust management for web verifiers (shared code)
+* Configuring reader trust management for verifiers (shared code)
 * Integrating the flow into your UI
 
 ## **Implementation Steps**
@@ -79,7 +78,7 @@ To set up the IACA key:
 val iacaCert = X509Cert.fromPem(Res.readBytes("files/iaca_certificate.pem").decodeToString())
 
 // Define certificate validity period
-val now = Clock.System.now()
+val now = Instant.fromEpochSeconds(Clock.System.now().epochSeconds)
 val validFrom = now
 val validUntil = now + 365.days
 
@@ -132,133 +131,6 @@ val iacaCertString = """
 val iacaCert = X509Cert.fromPem(iacaCertString)
 ```
 
-#### **`CompositeTrustManager` (Issuer Trust)**
-
-A trust manager is used to verify issuer certificate chains (determining which issuers are trusted). You can build a composite trust manager that combines multiple trust sources.
-
-A common setup includes:
-
-- A local trust manager for your own issuer certificates
-- A `VicalTrustManager` loaded from signed VICAL files (ISO/IEC 23220-4 standard)
-
-```kotlin
-// Create local trust manager
-val builtInIssuerTrustManager = TrustManagerLocal(
-    storage = EphemeralStorage(),
-    partitionId = "BuiltInTrustedIssuers",
-    identifier = "Built-in Trusted Issuers"
-)
-
-// Add your issuer certificate to the trust manager
-builtInIssuerTrustManager.addX509Cert(
-    certificate = iacaKey.certChain.certificates.first(),
-    metadata = TrustMetadata(displayName = "Your Trusted Issuer"),
-)
-
-// Load VICAL trust manager (optional, for standardized trust lists)
-// VICAL files contain signed trust lists following ISO/IEC 23220-4 standard
-// Load the file from your app's resources or assets
-val vicalFileBytes = Res.readBytes("files/ISO_SC17WG10_Wellington_Test_Event_Nov_2025.vical")
-val signedVical = SignedVical.parse(vicalFileBytes)
-val vicalTrustManager = VicalTrustManager(signedVical)
-
-// Combine multiple trust managers
-val issuerTrustManager = CompositeTrustManager(
-    listOf(builtInIssuerTrustManager, vicalTrustManager)
-)
-```
-
-**What it's used for:**
-
-- Validating credential issuer authenticity
-- Building trust relationships with credential issuers
-- Supporting both custom and standardized trust lists
-
-**VICAL Files:**
-
-VICAL (Verifiable Issuer Certificate Authority List) files are standardized trust lists that contain signed issuer certificates. They follow the ISO/IEC 23220-4 standard and allow you to trust multiple issuers through a single signed file.
-
-- **File format**: Binary VICAL format (`.vical` extension)
-- **Source**: Obtain from ISO/IEC working groups, credential program administrators, or trusted third parties
-- **Loading**: Load from your app's resources/assets or download from a trusted source
-- **Usage**: Parse the file using `SignedVical.parse()` and pass it to `VicalTrustManager`
-
-```kotlin
-// Example: Loading VICAL file from resources
-// Place the .vical file in your resources (e.g., src/commonMain/composeResources/files/)
-val vicalFileBytes = Res.readBytes("files/ISO_SC17WG10_Wellington_Test_Event_Nov_2025.vical")
-val signedVical = SignedVical.parse(vicalFileBytes)
-```
-
-#### **`ZkSystemRepository`**
-
-A repository for Zero-Knowledge Proof (ZKP) system specifications and circuits. These enable privacy-preserving credential verification where you can prove properties about credentials without revealing the actual data values.
-
-To initialize a ZKP system repository:
-
-1. Create a ZKP system (e.g., `LongfellowZkSystem()`)
-2. Load circuit files into the system
-3. Add the system to the repository
-
-```kotlin
-val longfellowSystem = LongfellowZkSystem()
-
-// List of Longfellow circuit files to load
-// These are pre-computed cryptographic circuits with hash-based filenames
-val longfellowCircuitFiles = listOf(
-    "files/longfellow-libzk-v1/6_1_4096_2945_137e5a75ce72735a37c8a72da1a8a0a5df8d13365c2ae3d2c2bd6a0e7197c7c6",
-    "files/longfellow-libzk-v1/6_2_4025_2945_b4bb6f01b7043f4f51d8302a30b36e3d4d2d0efc3c24557ab9212ad524a9764e",
-    "files/longfellow-libzk-v1/6_3_4121_2945_b2211223b954b34a1081e3fbf71b8ea2de28efc888b4be510f532d6ba76c2010",
-    "files/longfellow-libzk-v1/6_4_4283_2945_c70b5f44a1365c53847eb8948ad5b4fdc224251a2bc02d958c84c862823c49d6",
-)
-
-// Load circuit files from resources
-for (circuitFile in longfellowCircuitFiles) {
-    val circuitBytes = Res.readBytes(circuitFile)
-    val circuitName = circuitFile.substringAfterLast('/')
-    longfellowSystem.addCircuit(circuitName, ByteString(circuitBytes))
-}
-
-val zkSystemRepository = ZkSystemRepository().apply {
-    add(longfellowSystem)
-}
-```
-
-**What it's used for:**
-
-- Enabling zero-knowledge proof verification
-- Supporting privacy-preserving credential checks (e.g., "age > 21" without revealing birthdate)
-- Optional but recommended for enhanced privacy features
-
-**ZKP Circuit Files:**
-
-Circuit files are pre-computed cryptographic circuits that define the logic for zero-knowledge proofs. The Longfellow ZKP system uses multiple circuit files, each with a hash-based filename that uniquely identifies the circuit.
-
-**Understanding Circuit File Names:**
-
-The Longfellow circuit filenames follow a pattern: `{version}_{max_bits}_{hash_length}_{circuit_hash}`
-
-For example: `6_1_4096_2945_137e5a75ce72735a37c8a72da1a8a0a5df8d13365c2ae3d2c2bd6a0e7197c7c6`
-- `6_1`: Version and variant identifier
-- `4096`: Maximum number of bits supported
-- `2945`: Hash length in bits
-- `137e5a75...`: SHA-256 hash of the circuit content (verification)
-
-**Obtaining Circuit Files:**
-
-- **Source**: Download from the Longfellow library or credential program administrators
-- **Location**: Place circuit files in your app's resources (e.g., `src/commonMain/composeResources/files/longfellow-libzk-v1/`)
-- **Format**: Binary circuit files (the hash in the filename verifies file integrity)
-- **Required**: You need all listed circuit files for full ZKP functionality
-
-**Loading from Resources:**
-
-```kotlin
-// Example: Loading Longfellow circuits from app resources
-// Files should be placed in: src/commonMain/composeResources/files/longfellow-libzk-v1/
-val circuitBytes = Res.readBytes("files/longfellow-libzk-v1/6_1_4096_2945_...")
-```
-
 ### **2. Understand the Core W3C DC Request Flow**
 
 The W3C Digital Credentials flow involves several cryptographic operations and network requests.
@@ -279,6 +151,7 @@ suspend fun requestCredentialFromVerifier(
     
     // Step 2: Get platform-specific app origin
     val origin = getAppToAppOrigin()
+    // Note: "web-origin" is the W3C DC specification format identifier, not a requirement for web browsers
     val clientId = "web-origin:$origin"
     
     // Step 3: Build list of requested claims
@@ -659,14 +532,9 @@ above to have full control over the UX and error handling.
     <img src="/img/dc_native_3.png" alt="Step 3: Credential Sent to Verifier" style={{width: '100%', borderRadius: 6}} />
     <div style={{fontSize: '0.9em', marginTop: 4}}>Step 3</div>
   </div>
-  <div style={{width: '22%', minWidth: 120, textAlign: 'center'}}>
-    <img src="/img/dc_native_4.png" alt="Step 4: Verified Credential Displayed" style={{width: '100%', borderRadius: 6}} />
-    <div style={{fontSize: '0.9em', marginTop: 4}}>Step 4</div>
-  </div>
 </div>
 
 
 Refer
 to [HomeScreen.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/HomeScreen.kt#L186-L208)
 to see the demo button usage.
-

@@ -113,7 +113,7 @@ val dsCert = MdocUtil.generateDsCertificate(
 IACA (Issuing Authority Certification Authority) certificates establish the root of trust for credential issuers. They are X.509 certificates in PEM format that you use to verify the authenticity of credentials.
 
 - **File format**: PEM (Privacy-Enhanced Mail) format (`.pem` extension), which is a base64-encoded X.509 certificate
-- **Source**: Obtain from your credential program administrator, issuer, or certificate authority
+- **Source**: Copy the sample certificate from the repository, or generate it using [multipazctl](https://github.com/openwallet-foundation/multipaz?tab=readme-ov-file#command-line-tool)
 - **Loading**: Load from your app's resources/assets or obtain from a trusted source
 - **Usage**: Parse using `X509Cert.fromPem()` which expects a PEM-formatted string
 
@@ -125,12 +125,12 @@ Refer to the [sample IACA certificate file](https://github.com/openwallet-founda
 val iacaCert = X509Cert.fromPem(Res.readBytes("files/iaca_certificate.pem").decodeToString())
 
 // Alternative: If you have the certificate as a String already
-val iacaCertString = """
-    -----BEGIN CERTIFICATE-----
-    MIIE...
-    -----END CERTIFICATE-----
-""".trimIndent()
-val iacaCert = X509Cert.fromPem(iacaCertString)
+// val iacaCertString = """
+//     -----BEGIN CERTIFICATE-----
+//     MIIE...
+//     -----END CERTIFICATE-----
+// """.trimIndent()
+// val iacaCert = X509Cert.fromPem(iacaCertString)
 ```
 
 ### **2. Understand the Core W3C DC Request Flow**
@@ -443,81 +443,259 @@ for complete implementation.
 
 ### **7. Integrate Into Your UI**
 
-Now that you understand the core implementation, you can integrate it into your app's UI. Here's how
-to call the credential request flow:
+Now that you understand the core implementation, you can integrate it into your app's UI. The sample app provides a reusable `W3CDCCredentialsRequestButton` component that you can use in your screens.
+
+#### **Using W3CDCCredentialsRequestButton**
+
+Here's how to integrate the W3C Digital Credentials button in your UI (example from `HomeScreen.kt`):
 
 ```kotlin
 @Composable
-fun MyCredentialSharingScreen(app: App) {
-    val coroutineScope = rememberCoroutineScope()
-    
-    Button(onClick = {
-        coroutineScope.launch {
-            try {
-                // Initialize reader keys
-                val readerKey = initializeReaderKeys(app.storageTable)
-                
-                // Define what credential data to request
-                val request = DrivingLicense.getDocumentType().cannedRequests.first()
-                
-                // Make the W3C DC request
-                val response = requestCredentialFromVerifier(
-                    appReaderKey = readerKey,
-                    request = request,
-                    protocol = RequestProtocol.W3C_DC_OPENID4VP_29,
-                    format = CredentialFormat.ISO_MDOC,
-                    zkSystemRepository = app.zkSystemRepository
+fun HomeScreen(
+    app: App,
+    navController: NavController,
+    documents: List<Document>,
+    // ... other parameters
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // ... your other UI components
+
+        // Only show the button when documents are available and on Android
+        AnimatedVisibility(documents.isNotEmpty()) {
+            if (isAndroid()) {
+                W3CDCCredentialsRequestButton(
+                    promptModel = App.promptModel,
+                    storageTable = app.storageTable,
+                    text = "W3CDC Credentials Request",  // Optional: customize button text
+                    showResponse = { vpToken, deviceResponse, sessionTranscript, nonce, eReaderKey, metadata ->
+                        // Encode response data as base64url for navigation
+                        val vpTokenString = vpToken
+                            ?.let { Json.encodeToString(it) }
+                            ?.encodeToByteArray()
+                            ?.toBase64Url() ?: "_"
+
+                        val deviceResponseString = deviceResponse
+                            ?.let { Cbor.encode(it).toBase64Url() }
+                            ?: "_"
+
+                        val sessionTranscriptString = Cbor.encode(sessionTranscript).toBase64Url()
+
+                        val nonceString = nonce
+                            ?.let { nonce.toByteArray().toBase64Url() }
+                            ?: "_"
+
+                        val eReaderKeyString = eReaderKey
+                            ?.let { Cbor.encode(eReaderKey.toCoseKey().toDataItem()).toBase64Url() }
+                            ?: "_"
+
+                        val metadataString = Cbor.encode(metadata.toDataItem()).toBase64Url()
+                        
+                        // Navigate to a screen that displays the response
+                        val route = "show_response/$vpTokenString/$deviceResponseString/$sessionTranscriptString/$nonceString/$eReaderKeyString/$metadataString"
+                        navController.navigate(route)
+                    }
                 )
-                
-                // Handle the response
-                when (response) {
-                    is MdocApiDcResponse -> {
-                        // Process mDoc format response
-                        processDeviceResponse(response.deviceResponse)
-                    }
-                    is OpenID4VPDcResponse -> {
-                        // Process OpenID4VP format response
-                        processVpToken(response.vpToken)
-                    }
-                }
-            } catch (e: Exception) {
-                Logger.e("W3CDC", "Error requesting credentials", e)
-                // Show error to user
             }
         }
-    }) {
-        Text("Share Credential with Verifier")
+    }
+}
+```
+Refer to [HomeScreen.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/a56a2ba9f915d7c65ac31f8fc4a17600c5fd1873/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/HomeScreen.kt#L202C2-L245C10) file for context.
+#### **Understanding the showResponse Callback**
+
+The `showResponse` callback receives six parameters with credential data:
+
+1. **`vpToken: JsonObject?`** - OpenID4VP format response (if using OpenID4VP protocol)
+2. **`deviceResponse: DataItem?`** - ISO 18013-7 mDoc format response (if using mDoc API protocol)
+3. **`sessionTranscript: DataItem`** - Cryptographic binding between request and response
+4. **`nonce: ByteString?`** - The nonce used for request/response correlation
+5. **`eReaderKey: EcPrivateKey?`** - The ephemeral reader key (for advanced scenarios)
+6. **`metadata: ShowResponseMetadata`** - Performance and protocol metadata
+
+**ShowResponseMetadata Structure:**
+
+```kotlin
+data class ShowResponseMetadata(
+    val engagementType: String,              // e.g., "OS-provided CredentialManager API"
+    val transferProtocol: String,            // e.g., "W3C Digital Credentials (OpenID4VP 1.0)"
+    val requestSize: Long,                   // Size of request in bytes
+    val responseSize: Long,                  // Size of response in bytes
+    val durationMsecNfcTapToEngagement: Long?,          // N/A for W3C DC (null)
+    val durationMsecEngagementReceivedToRequestSent: Long?,  // N/A for W3C DC (null)
+    val durationMsecRequestSentToResponseReceived: Long     // Request-to-response latency
+)
+```
+Refer to [ShowResponseMetadata.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/ShowResponseMetadata.kt) file for context.
+
+#### **Essential Integration Code**
+
+**1. Initialize reader keys on button click:**
+
+```kotlin
+// Parse certificate validity dates
+val certsValidFrom = LocalDate.parse("2024-12-01").atStartOfDayIn(TimeZone.UTC)
+val certsValidUntil = LocalDate.parse("2034-12-01").atStartOfDayIn(TimeZone.UTC)
+
+// Initialize reader root key and certificate (root of trust)
+val readerRootKey = readerRootInit(
+    keyStorage = storageTable,
+    certsValidFrom = certsValidFrom,
+    certsValidUntil = certsValidUntil
+)
+
+// Initialize reader key and certificate (operational key for signing requests)
+val readerKey = readerInit(
+    keyStorage = storageTable,
+    readerRootKey = readerRootKey,
+    certsValidFrom = certsValidFrom,
+    certsValidUntil = certsValidUntil
+)
+```
+
+**2. Execute the credential request flow:**
+
+```kotlin
+// Generate nonce and encryption key
+val nonce = ByteString(Random.Default.nextBytes(16))
+val responseEncryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
+
+// Get app origin and build client ID
+val origin = getAppToAppOrigin()
+val clientId = "web-origin:$origin"
+
+// Define protocol
+val exchangeProtocolNames = listOf("openid4vp-v1-signed")
+
+// Build claims list from your request
+val claims = mutableListOf<MdocRequestedClaim>()
+request.mdocRequest!!.namespacesToRequest.forEach { namespaceRequest ->
+    namespaceRequest.dataElementsToRequest.forEach { (mdocDataElement, intentToRetain) ->
+        claims.add(
+            MdocRequestedClaim(
+                namespaceName = namespaceRequest.namespace,
+                dataElementName = mdocDataElement.attribute.identifier,
+                intentToRetain = intentToRetain
+            )
+        )
+    }
+}
+
+// Generate the W3C DC request
+val dcRequestObject = VerificationUtil.generateDcRequestMdoc(
+    exchangeProtocols = exchangeProtocolNames,
+    docType = request.mdocRequest!!.docType,
+    claims = claims,
+    nonce = nonce,
+    origin = origin,
+    clientId = clientId,
+    responseEncryptionKey = responseEncryptionKey.publicKey,
+    readerAuthenticationKey = readerKey,
+    zkSystemSpecs = emptyList()
+)
+
+// Send request and decrypt response
+val dcResponseObject = DigitalCredentials.Default.request(dcRequestObject)
+val dcResponse = VerificationUtil.decryptDcResponse(
+    response = dcResponseObject,
+    nonce = nonce,
+    origin = origin,
+    responseEncryptionKey = AsymmetricKey.anonymous(
+        privateKey = responseEncryptionKey,
+        algorithm = responseEncryptionKey.curve.defaultKeyAgreementAlgorithm
+    )
+)
+
+// Handle the response
+when (dcResponse) {
+    is MdocApiDcResponse -> {
+        // Process mDoc format: dcResponse.deviceResponse, dcResponse.sessionTranscript
+    }
+    is OpenID4VPDcResponse -> {
+        // Process OpenID4VP format: dcResponse.vpToken, dcResponse.sessionTranscript
     }
 }
 ```
 
-**What does this do?**
-
-* Creates a button that triggers the W3C DC flow
-* Initializes reader keys on demand
-* Specifies which credential type and data elements to request
-* Handles both mDoc and OpenID4VP response formats
-* Provides error handling for network/crypto failures
-
-**For Testing/Demo:**
-
-The sample app includes a pre-built `W3CDCCredentialsRequestButton` that implements all of this for
-you:
+**3. Required helper functions for reader initialization:**
 
 ```kotlin
-// For testing/demo purposes only
-W3CDCCredentialsRequestButton(
-    promptModel = App.promptModel,
-    storageTable = app.storageTable,
-    zkSystemRepository = app.zkSystemRepository,
-    showResponse = { vpToken, deviceResponse, sessionTranscript, nonce, eReaderKey, metadata ->
-        // Handle response
-    }
-)
+private suspend fun readerInit(
+    keyStorage: StorageTable,
+    readerRootKey: AsymmetricKey.X509CertifiedExplicit,
+    certsValidFrom: Instant,
+    certsValidUntil: Instant
+): AsymmetricKey.X509Certified {
+    val readerPrivateKey = keyStorage.get("readerKey")
+        ?.let { EcPrivateKey.fromDataItem(Cbor.decode(it.toByteArray())) }
+        ?: Crypto.createEcPrivateKey(EcCurve.P256).also {
+            keyStorage.insert("readerKey", ByteString(Cbor.encode(it.toDataItem())))
+        }
+
+    val readerCert = keyStorage.get("readerCert")
+        ?.let { X509Cert.fromDataItem(Cbor.decode(it.toByteArray())) }
+        ?: MdocUtil.generateReaderCertificate(
+            readerRootKey = readerRootKey,
+            readerKey = readerPrivateKey.publicKey,
+            subject = X500Name.fromName("CN=My Verifier App"),
+            serial = ASN1Integer.fromRandom(numBits = 128),
+            validFrom = certsValidFrom,
+            validUntil = certsValidUntil
+        ).also {
+            keyStorage.insert("readerCert", ByteString(Cbor.encode(it.toDataItem())))
+        }
+
+    return AsymmetricKey.X509CertifiedExplicit(
+        certChain = X509CertChain(listOf(readerCert) + readerRootKey.certChain.certificates),
+        privateKey = readerPrivateKey
+    )
+}
+
+private suspend fun readerRootInit(
+    keyStorage: StorageTable,
+    certsValidFrom: Instant,
+    certsValidUntil: Instant
+): AsymmetricKey.X509CertifiedExplicit {
+    val readerRootKey = loadBundledReaderRootKey()  // Load from PEM files in resources
+    
+    val readerRootPrivateKey = keyStorage.get("readerRootKey")
+        ?.let { EcPrivateKey.fromDataItem(Cbor.decode(it.toByteArray())) }
+        ?: readerRootKey.also {
+            keyStorage.insert("readerRootKey", ByteString(Cbor.encode(it.toDataItem())))
+        }
+
+    val readerRootCert = keyStorage.get("readerRootCert")
+        ?.let { X509Cert.fromDataItem(Cbor.decode(it.toByteArray())) }
+        ?: MdocUtil.generateReaderRootCertificate(
+            readerRootKey = AsymmetricKey.anonymous(readerRootPrivateKey),
+            subject = X500Name.fromName("CN=My Verifier App Root"),
+            serial = ASN1Integer.fromRandom(numBits = 128),
+            validFrom = certsValidFrom,
+            validUntil = certsValidUntil,
+            crlUrl = "https://example.com/crl"
+        ).also {
+            keyStorage.insert("readerRootCert", ByteString(Cbor.encode(it.toDataItem())))
+        }
+
+    return AsymmetricKey.X509CertifiedExplicit(
+        certChain = X509CertChain(listOf(readerRootCert)),
+        privateKey = readerRootPrivateKey
+    )
+}
 ```
 
-This button is useful for testing but in production you should implement the flow yourself as shown
-above to have full control over the UX and error handling.
+**Key Points:**
+
+- **Reader keys are initialized once** and stored persistently using `StorageTable`
+- **Nonce and encryption key are generated per-request** for security
+- **The request flow** calls `DigitalCredentials.Default.request()` with proper parameters
+- **Response decryption** uses the ephemeral encryption key created during request
+
+See the [complete reference implementation](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt) for all details including constants and error handling
+
 
 #### **Demo Screenshots**
 
@@ -536,7 +714,3 @@ above to have full control over the UX and error handling.
   </div>
 </div>
 
-
-Refer
-to [HomeScreen.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/HomeScreen.kt#L186-L208)
-to see the demo button usage.

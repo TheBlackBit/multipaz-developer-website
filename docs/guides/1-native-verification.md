@@ -117,6 +117,8 @@ IACA (Issuing Authority Certification Authority) certificates establish the root
 - **Loading**: Load from your app's resources/assets or obtain from a trusted source
 - **Usage**: Parse using `X509Cert.fromPem()` which expects a PEM-formatted string
 
+Refer to the [sample IACA certificate file](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/iaca_certificate.pem) for an example.
+
 ```kotlin
 // Example: Loading IACA certificate from resources
 // Place the .pem file in: src/commonMain/composeResources/files/

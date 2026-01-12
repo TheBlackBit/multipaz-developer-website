@@ -111,23 +111,34 @@ Refer to **[this Info.plist code](https://github.com/openwallet-foundation/multi
 - `PresentmentModel.State.CONNECTING` → shows `showQrCode` (QR code display). Once scanned, transitions to `PresentmentModel.State.WAITING_FOR_SOURCE` and further states.
 - Other states → shows `Presentment` composable (including cconsent/authentication, etc.). When the reader disconnects, returns to `PresentmentModel.State.IDLE` and shows `showQrButton` again.
 
-You can generate QR codes using `org.multipaz.compose.qrcode:generateQrCode`.
-
 ```kotlin
 class App {
     // ...
     lateinit var presentmentModel: PresentmentModel
     lateinit var presentmentSource: PresentmentSource
 
+    companion object {
+        // ...
+
+        // Domains used for MdocCredential & SdJwtVcCredential
+        private const val CREDENTIAL_DOMAIN_MDOC_USER_AUTH = "mdoc_user_auth"
+        private const val CREDENTIAL_DOMAIN_MDOC_MAC_USER_AUTH = "mdoc_mac_user_auth"
+        private const val CREDENTIAL_DOMAIN_SDJWT_USER_AUTH = "sdjwt_user_auth"
+        private const val CREDENTIAL_DOMAIN_SDJWT_KEYLESS = "sdjwt_keyless"
+    }
+
     suspend fun init() {
         // ...
-        presentmentModel = PresentmentModel().apply { setPromptModel(promptModel) }
+        presentmentModel = PresentmentModel().apply { setPromptModel(org.multipaz.util.Platform.promptModel) }
         presentmentSource = SimplePresentmentSource(
             documentStore = documentStore,
             documentTypeRepository = documentTypeRepository,
             readerTrustManager = readerTrustManager,
             preferSignatureToKeyAgreement = true,
-            domainMdocSignature = "mdoc",
+            domainMdocSignature = CREDENTIAL_DOMAIN_MDOC_USER_AUTH,
+            domainMdocKeyAgreement = CREDENTIAL_DOMAIN_MDOC_MAC_USER_AUTH,
+            domainKeylessSdJwt = CREDENTIAL_DOMAIN_SDJWT_KEYLESS,
+            domainKeyBoundSdJwt = CREDENTIAL_DOMAIN_SDJWT_USER_AUTH
         )
     }
 
@@ -167,7 +178,7 @@ class App {
 }
 ```
 
-The implementation code for the initialization of PresentmentModel can be found [here](https://github.com/openwallet-foundation/multipaz-samples/blob/7988c38259d62972a93b10a5fc2f5c43e6a789d8/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L251-L258) & for the UI updates can be found [here](https://github.com/openwallet-foundation/multipaz-samples/blob/7988c38259d62972a93b10a5fc2f5c43e6a789d8/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L338-L349).
+The implementation code for the initialization of PresentmentModel can be found [here](https://github.com/openwallet-foundation/multipaz-samples/blob/72f4b28d448b8a049b1c392daf5cd3a9e2cbba63/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L272-L283) & for the UI updates can be found [here](https://github.com/openwallet-foundation/multipaz-samples/blob/7988c38259d62972a93b10a5fc2f5c43e6a789d8/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L338-L349).
 
 ## Starting Device Engagement
 
@@ -212,7 +223,7 @@ Refer to **[the show QR button code](https://github.com/openwallet-foundation/mu
 
 ## Displaying the QR Code
 
-Use the following composable to display the QR code generated for presentment.
+Use the following composable to display the QR code generated for presentment. You can generate QR codes using `org.multipaz.compose.qrcode:generateQrCode`.
 
 **Example: QR Code Display**
 

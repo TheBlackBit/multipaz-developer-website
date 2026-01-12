@@ -3,47 +3,30 @@ title: Verification Modes
 sidebar_position: 2
 ---
 
-
+import ThemedIframe from '../../../src/components/ThemedIframe';
 
 # Verification Modes
 
-The application supports three types of verification modes:Age Over 18,Age Over 21,Identification.
+LoyaltyReader only supports one type of verification mode: **Utopia Wholesale Membership**
 
-Age Over 18  
-This mode verifies if the individual is 18 years or older. It is designed for scenarios where only age verification is required, without revealing full personal identity information.
+This mode requests the following identification details from a Loyalty Credential:
 
-Age Over 21  
-Functionally identical to "Age Over 18", this mode verifies whether the individual is 21 years or older. It is commonly used for alcohol purchases or entry to age-restricted venues.
+- `family_name`: Last name, surname, or primary identifier, of the document holder
+- `given_name`: First name(s), other name(s), or secondary identifier, of the document holder
+- `portrait`: Photo of Holder
+- `membership_number`: Person identifier of the Loyalty ID holder
+- `tier`: Membership tier (basic, silver, gold, platinum, elite)
+- `issue_date`: Date when document was issued
+- `expiry_date`: Date when document expires
 
-Identification  
-This mode requests the user's full identification details, including name, birthdate, document number, and portrait. It is used in scenarios where complete identity verification is required, such as account registration or employment verification.
+## Query Selection Implementation  
 
-Query Selection Implementation  
-When a user selects a verification mode, a corresponding query is executed in ReaderQuery.kt as follows:
+When a user performs a request, a corresponding query is executed in [`ReaderQuery.kt`](https://github.com/openwallet-foundation/multipaz-identity-reader/blob/deb29cfec63d507b1276f9ab12c74a414679db1a/libfrontend/src/commonMain/kotlin/org/multipaz/identityreader/ReaderQuery.kt) as shown below. The data elements listed above are addded to the request.
 
+<ThemedIframe
+  githubUrl="https://github.com/openwallet-foundation/multipaz-identity-reader/blob/deb29cfec63d507b1276f9ab12c74a414679db1a/libfrontend/src/commonMain/kotlin/org/multipaz/identityreader/ReaderQuery.kt#L127-L142"
+/>
 
-```
-when (query) {
-    ReaderQuery.AGE_OVER_18 -> {
-        mdlNs.put("age_over_18", intentToRetain)
-        mdlNs.put("portrait", intentToRetain)
-    }
-    ReaderQuery.AGE_OVER_21 -> {
-        mdlNs.put("age_over_21", intentToRetain)
-        mdlNs.put("portrait", intentToRetain)
-    }
-    ReaderQuery.IDENTIFICATION -> {
-        mdlNs.put("given_name", intentToRetain)
-        mdlNs.put("family_name", intentToRetain)
-        // Additional identity attributes
-        mdlNs.put("issue_date", intentToRetain)
-        mdlNs.put("expiry_date", intentToRetain)
-    }
-}
-```
+**Display Behavior:**
 
-Display Behavior  :
-The Verifier app will display relevant fields based on the selected verification mode:
-Age Over 18: Displays the person's portrait and a message like "This person is 18 or older."
-Age Over 21: Displays the portrait with a message confirming the person is 21 or older.
-Identification: Displays all identity data elements, such as "given\_name", "family\_name", "issue\_date", etc.
+The Verifier app will display the relevant fields including the portrait, values of the requested parameters (viz name, membership number, tier, etc), whether test data or not, etc. if the request succeeds.

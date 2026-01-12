@@ -39,26 +39,34 @@ First, ensure your project has the necessary Android manifest configuration for 
 
 #### **1.2 Understand the CredmanActivity Class**
 
+`CredmanActivity` lives in the Android-specific source set (for example, `composeApp/src/androidMain/.../CredmanActivity.kt`) and is responsible for handling W3C DC API presentation requests.
+
 ```kotlin
-class CredmanActivity: CredentialManagerPresentmentActivity() {
+class CredmanActivity : CredentialManagerPresentmentActivity() {
+
+    private val promptModel: PromptModel by inject()
+    private val documentTypeRepository: DocumentTypeRepository by inject()
+    private val presentmentSource: PresentmentSource by inject()
+
     override suspend fun getSettings(): Settings {
-        val app = App.getInstance()
-        app.init()
         return Settings(
-                appName = app.appName,                    // Display name for the wallet
-                appIcon = app.appIcon,                    // Icon shown in credential requests
-                promptModel = App.promptModel,            // User interaction handling
-                applicationTheme = @Composable { content -> MaterialTheme { content() } },
-                documentTypeRepository = app.documentTypeRepository,  // Supported credential types
-                presentmentSource = app.presentmentSource,           // Credential source
-                imageLoader = ImageLoader.Builder(applicationContext).components { /* network loader omitted */ }.build(),
-                privilegedAllowList = Res.readBytes("files/privilegedUserAgents.json").decodeToString()
+            appName = APP_NAME,                           // Display name for the wallet
+            appIcon = appIcon,                            // Icon shown in credential requests
+            promptModel = promptModel,                    // User interaction handling
+            applicationTheme = @Composable { content -> MaterialTheme { content() } },
+            documentTypeRepository = documentTypeRepository,  // Supported credential types
+            presentmentSource = presentmentSource,            // Credential source
+            imageLoader = ImageLoader.Builder(applicationContext)
+                .components { /* network loader omitted */ }
+                .build(),
+            privilegedAllowList = Res.readBytes("files/privilegedUserAgents.json")
+                .decodeToString()
         )
     }
 }
 ```
 
-CredmanActivity extends CredentialManagerPresentmentActivity from the Multipaz library, which provides the core W3C DC API functionality. This class acts as the bridge between the Android system and your wallet's credential presentation logic.
+`CredmanActivity` extends `CredentialManagerPresentmentActivity` from the Multipaz library, which provides the core W3C DC API functionality.  
 
 ### **Step 2: Understanding Android Manifest Configuration**
 

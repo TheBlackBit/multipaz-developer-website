@@ -13,44 +13,81 @@ We will discuss how to create a credential and bind it to the document created a
 
 ### **Add Verifier Certificate**
 
+The Holder app also needs to add the Verifier (Reader) certificate to its trust list. This ensures that the Holder can recognize and trust the Verifier during credential sharing. The Verifier's certificate can be downloaded from the Multipaz Verifier [website](https://verifier.multipaz.org/identityreaderbackend/).
 
-The Holder app also needs to add the Verifier (Reader) certificate to its trust list. This ensures that the Holder can recognize and trust the Verifier during credential sharing. The Verifier's certificate can be downloaded from the Multipaz Verifier [website](https://verifier.multipaz.org/identityreaderbackend/). Below is the code snippet demonstrating how to add the Verifier's certificate to the trust list,In App.kt:
+In your Koin module (`MultipazModule.kt`), configure the `TrustManager` to add the Verifier certificates. The `TrustManager` is defined as a singleton and automatically adds all required certificates during initialization:
+
 ```kotlin
-//TODO: Add X509Cert
-addX509Cert(
-    certificate = X509Cert.fromPem(
-        Res.readBytes("files/test_app_reader_root_certificate.pem")
-            .decodeToString().trimIndent().trim()
-    ),
-    metadata = TrustMetadata(
-        displayName = "OWF Multipaz Test App Reader",
-        displayIcon = null,
-        privacyPolicyUrl = "https://apps.multipaz.org"
-    )
-)
-addX509Cert(
-    certificate = X509Cert.fromPem(
-        Res.readBytes("files/reader_root_certificate.pem").decodeToString()
-            .trimIndent().trim(),
-    ),
-    metadata = TrustMetadata(
-        displayName = "Multipaz Identity Reader (Trusted Devices)",
-        displayIcon = null,
-        privacyPolicyUrl = "https://apps.multipaz.org"
-    )
-)
-addX509Cert(
-    certificate = X509Cert.fromPem(
-        Res.readBytes("files/reader_root_certificate_for_untrust_device.pem")
-            .decodeToString().trimIndent().trim(),
-    ),
-    metadata = TrustMetadata(
-        displayName = "Multipaz Identity Reader (UnTrusted Devices)",
-        displayIcon = null,
-        privacyPolicyUrl = "https://apps.multipaz.org"
-    )
-)
+//TODO: define TrustManager in Koin module
+single<TrustManager> {
+    val trustManager = TrustManagerLocal(storage = get(), identifier = "reader")
+
+    runBlocking {
+        suspend fun addCertificateIfNotExists(
+            certPath: String,
+            displayName: String,
+            privacyPolicyUrl: String
+        ) {
+            try {
+                val certPem = Res.readBytes(certPath)
+                    .decodeToString()
+                    .trimIndent()
+                    .trim()
+
+                trustManager.addX509Cert(
+                    certificate = X509Cert.fromPem(certPem),
+                    metadata = TrustMetadata(
+                        displayName = displayName,
+                        displayIcon = null,
+                        privacyPolicyUrl = privacyPolicyUrl
+                    )
+                )
+                Logger.i("TrustManager", "Successfully added certificate: $displayName")
+            } catch (e: TrustPointAlreadyExistsException) {
+                Logger.e(
+                    "TrustManager",
+                    "Certificate already exists: $displayName",
+                    e
+                )
+            } catch (e: Exception) {
+                Logger.e(
+                    "TrustManager",
+                    "Failed to add certificate: $displayName - ${e.message}",
+                    e
+                )
+            }
+        }
+
+        // Add all required certificates
+        addCertificateIfNotExists(
+            certPath = "files/test_app_reader_root_certificate.pem",
+            displayName = "OWF Multipaz Test App Reader",
+            privacyPolicyUrl = "https://apps.multipaz.org"
+        )
+
+        addCertificateIfNotExists(
+            certPath = "files/reader_root_certificate.pem",
+            displayName = "Multipaz Identity Reader (Trusted Devices)",
+            privacyPolicyUrl = "https://apps.multipaz.org"
+        )
+
+        addCertificateIfNotExists(
+            certPath = "files/reader_root_certificate_for_untrust_device.pem",
+            displayName = "Multipaz Identity Reader (UnTrusted Devices)",
+            privacyPolicyUrl = "https://apps.multipaz.org"
+        )
+
+        trustManager
+    }
+}
 ```
+
+**Key points:**
+
+* The `TrustManager` is created using `TrustManagerLocal` with the `Storage` instance injected via Koin's `get()`.
+* The helper function `addCertificateIfNotExists` handles certificate loading and error handling, preventing duplicate certificate errors.
+* All three certificates are added during the Koin module initialization.
+* The `TrustManager` instance is then available for injection throughout your app.
 
 
 ---
@@ -102,28 +139,52 @@ We will use components just like below
 * NdefService  		binds the NFC engagement mechanism.
 
 
-### **Step 1: Initialize PresentmentModel**
+### **Step 1: Configure PresentmentSource in Koin**
 
-In App.kt , initialize this model during app startup (if not already):
+In your Koin module (`MultipazModule.kt`), configure the `PresentmentSource` which handles credential presentation to verifiers. The `PresentmentSource` is responsible for managing the presentation flow and supporting different credential formats.
 
 ```kotlin
-// TODO: add provisioningModel
-provisioningModel = ProvisioningModel(
-    documentStore = documentStore,
-    secureArea = Platform.getSecureArea(),
-    httpClient = io.ktor.client.HttpClient() {
-        followRedirects = false
-    },
-    promptModel = Platform.promptModel,
-    documentMetadataInitializer = ::initializeDocumentMetadata
-)
+//TODO: define PresentmentSource in Koin module
+single<PresentmentSource> {
+    runBlocking {
+        if (DigitalCredentials.Default.available) {
+            DigitalCredentials.Default.startExportingCredentials(
+                documentStore = get(),
+                documentTypeRepository = get()
+            )
+        }
+
+        SimplePresentmentSource(
+            documentStore = get(),
+            documentTypeRepository = get(),
+            readerTrustManager = get(),
+            preferSignatureToKeyAgreement = true,
+            // Match domains used when storing credentials via OpenID4VCI
+            domainMdocSignature = TestAppUtils.CREDENTIAL_DOMAIN_MDOC_USER_AUTH,
+            domainMdocKeyAgreement = TestAppUtils.CREDENTIAL_DOMAIN_MDOC_MAC_USER_AUTH,
+            domainKeylessSdJwt = TestAppUtils.CREDENTIAL_DOMAIN_SDJWT_KEYLESS,
+            domainKeyBoundSdJwt = TestAppUtils.CREDENTIAL_DOMAIN_SDJWT_USER_AUTH
+        )
+    }
+}
 ```
-This model manages the credential presentation lifecycle, including state transitions like `IDLE`, `CONNECTING`, `COMPLETED`, etc.
+
+**Key points:**
+
+* `PresentmentSource` is configured as a singleton in the Koin module.
+* If `DigitalCredentials.Default` is available (Android), it starts exporting credentials for system-level credential sharing.
+* `SimplePresentmentSource` is created with all required dependencies injected via Koin's `get()` function:
+  * `documentStore` - For accessing stored credentials
+  * `documentTypeRepository` - For managing document types
+  * `readerTrustManager` - For verifying verifier certificates
+* Domain configurations match those used during credential storage via OpenID4VCI to ensure proper credential binding.
+
+The `PresentmentModel` (which manages the presentation lifecycle and state transitions like `IDLE`, `CONNECTING`, `COMPLETED`, etc.) is also configured in the Koin module and can be injected wherever needed in your app.
 
 
 ### **Step 2: Add a QR Presentation Button**
 
-The `showQrButton()` composable sets up a UI button that begins the QR-code based session.
+In `AccountScreen.kt`, add a UI button that begins the QR-code based session. The `showQrButton()` composable sets up this functionality.
 Internally, this function:
 
 * Starts a BLE connection for a mobile document (mDoc).
@@ -133,6 +194,8 @@ Internally, this function:
 * Shows the engagement as a QR code.
 
 * Waits for a verifier to connect.
+
+_AccountScreen.kt_
 
 ```kotlin
 // TODO: show qr button when credentials are available
@@ -187,7 +250,9 @@ When the user taps **Present mDL via QR**, the following sequence is triggered:
 
 ### **Step 3: Generate and Show the QR Code**
 
-When `showQrButton()` triggers the connection, it calls `showQrCode()` to display a QR code representing the device engagement.
+In `AccountScreen.kt`, when `showQrButton()` triggers the connection, it calls `showQrCode()` to display a QR code representing the device engagement.
+
+_AccountScreen.kt_
 
 ```kotlin
 //TODO: show QR code
@@ -205,37 +270,70 @@ The QR code encodes the device's **payload**, which a verifier can scan to initi
 
 
 
-### **Step 4(Android Only): Sharing Credential Code by NFC**
+### **Step 4 (Android Only): Sharing Credentials via NFC**
 
 In this section, you'll learn how to enable **NFC credential sharing** in your Utopia app. NFC (Near Field Communication) is a contactless mechanism allowing users to "tap" their phone to a verifier device to present credentials. This is especially useful for Android devices, offering fast and secure sharing without opening a UI manually.
 
-* `NfcActivity`	Handles the credential presentation lifecycle triggered by NFC tap.  
-* `NdefService`	System-level service that binds the NFC engagement mechanism.  
-* `AndroidManifest.xml`	Declares the NFC capabilities and configures the app’s NFC role.
+These components live in the **Android-specific source set** (`composeApp/src/androidMain/`):
 
-1. Define `NfcActivity.kt` (Presentation Flow)
+* `NfcActivity` – Handles the credential presentation lifecycle triggered by an NFC tap.  
+* `NdefService` – System-level service that binds the NFC engagement mechanism.  
+* `AndroidManifest.xml` – Declares the NFC capabilities and configures the app’s NFC role.
 
-NfcActivity extends from MdocNfcPresentmentActivity(this activity used for ISO/IEC 18013-5:2021 presentment when using NFC engagement.)
+#### 1. Define `NfcActivity.kt` (Presentation Flow)
 
-This activity launches when the device is tapped against a verifier. It initializes the SDK and returns the appropriate settings, in the settings it includes information like appname, appIcon, promptModel,etc:
+`NfcActivity` extends `MdocNfcPresentmentActivity` (used for ISO/IEC 18013-5:2021 presentment when using NFC engagement).
 
-_NfcActivity.kt_
+This activity launches when the device is tapped against a verifier. It initializes the SDK through Koin-injected dependencies and returns the appropriate settings, including `appName`, `appIcon`, `promptModel`, `documentTypeRepository`, and `presentmentSource`.
+
+_`composeApp/src/androidMain/.../NfcActivity.kt`_
 
 ```kotlin
-//TODO: init app instance
-app.init()
+class NfcActivity : MdocNfcPresentmentActivity() {
+
+    private val promptModel: PromptModel by inject()
+    private val documentTypeRepository: DocumentTypeRepository by inject()
+    private val presentmentSource: PresentmentSource by inject()
+
+    override suspend fun getSettings(): Settings {
+        return Settings(
+            appName = APP_NAME,
+            appIcon = appIcon,
+            promptModel = promptModel,
+            applicationTheme = @Composable { content -> MaterialTheme { content() } },
+            documentTypeRepository = documentTypeRepository,
+            presentmentSource = presentmentSource,
+            imageLoader = ImageLoader.Builder(applicationContext)
+                .components { /* network loader omitted */ }
+                .build(),
+        )
+    }
+}
 ```
 
-This activity wakes the device if necessary and securely presents credentials.
+This activity wakes the device if necessary and securely presents credentials when the phone is tapped against a verifier.
 
+#### 2. Define `NdefService.kt` (Engagement Settings)
 
-2. Define `NdefService.kt` (Engagement Settings)
+`NdefService` extends `MdocNdefService` (base class for implementing NFC engagement according to ISO/IEC 18013-5:2021).
 
-`NdefService` extends from `MdocNdefService`(Base class for implementing NFC engagement according to ISO/IEC 18013-5:2021.)
+In this service, you load the user's NFC-related settings via `AppSettingsModel` and configure the engagement behavior:
 
-In _NdefService.kt_ 
+_`composeApp/src/androidMain/.../NdefService.kt`_
+
 ```kotlin
-Settings(
+class NdefService : MdocNdefService() {
+    private lateinit var settingsModel: AppSettingsModel
+    private val promptModel: PromptModel by inject()
+
+    override suspend fun getSettings(): Settings {
+
+        settingsModel = AppSettingsModel.create(
+            storage = Platform.storage,
+            readOnly = true
+        )
+
+        return Settings(
             sessionEncryptionCurve = settingsModel.presentmentSessionEncryptionCurve.value,
             allowMultipleRequests = settingsModel.presentmentAllowMultipleRequests.value,
             useNegotiatedHandover = settingsModel.presentmentUseNegotiatedHandover.value,
@@ -247,10 +345,13 @@ Settings(
                 bleUseL2CAP = settingsModel.presentmentBleL2CapEnabled.value,
                 bleUseL2CAPInEngagement = settingsModel.presentmentBleL2CapInEngagementEnabled.value
             ),
-            promptModel = App.promptModel,
+            promptModel = promptModel,
             presentmentActivityClass = NfcActivity::class.java
         )
+    }
+}
 ```
+
 `negotiatedHandoverPreferredOrder` is set to select BLE. In this case, NFC establishes the initial connection. No credential data is transferred at this stage. The NFC connection is used to negotiate which transport method to use. Since BLE is selected, a BLE connection is established, and credentials are shared over BLE.
 
 Configure `AndroidManifest.xml`:Add NFC capabilities and link your `NfcActivity` and `NdefService` in `AndroidManifest.xml`

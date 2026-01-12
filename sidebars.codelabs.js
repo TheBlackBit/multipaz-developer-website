@@ -45,7 +45,7 @@
             items: [
               'Utopia Wholesale Codelab/Verifier/Verifier',
               'Utopia Wholesale Codelab/Verifier/Verification Modes',
-              'Utopia Wholesale Codelab/Verifier/How to Import a Certificate'
+              'Utopia Wholesale Codelab/Verifier/Testing Holder'
             ],
             collapsed: false,
             collapsible: true,
@@ -55,7 +55,8 @@
             label: 'Advanced Features',
             items: [
               'Utopia Wholesale Codelab/Advanced Features/W3C DC API Implementation',
-              'Utopia Wholesale Codelab/Advanced Features/Request Multiple Credentials with DCQL'
+              'Utopia Wholesale Codelab/Advanced Features/Request Multiple Credentials with DCQL',
+              'Utopia Wholesale Codelab/Advanced Features/Deploying to Google Cloud Run'
             ],
             collapsed: false,
             collapsible: true,

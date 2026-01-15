@@ -53,6 +53,8 @@ val storageTable = storage.getTable(
 - Persisting cryptographic material across app restarts
 - Maintaining verifier identity between sessions
 
+Refer to the **[storage initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L121C10-L128C14)** for the complete example.
+
 **Device Security Requirements:**
 
 The W3C DC implementation requires device-level security to be configured to properly protect stored cryptographic material:
@@ -102,6 +104,8 @@ val dsCert = MdocUtil.generateDsCertificate(
 )
 ```
 
+Refer to the **[IACA certificate initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L142-L168)** for more context.
+
 **Why this matters for W3C DC:**
 
 - Enables credential issuer verification
@@ -117,7 +121,7 @@ IACA (Issuing Authority Certification Authority) certificates establish the root
 - **Loading**: Load from your app's resources/assets or obtain from a trusted source
 - **Usage**: Parse using `X509Cert.fromPem()` which expects a PEM-formatted string
 
-Refer to the [sample IACA certificate file](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/iaca_certificate.pem) for an example.
+Refer to the **[sample IACA certificate file](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/iaca_certificate.pem)** for an example.
 
 ```kotlin
 // Example: Loading IACA certificate from resources
@@ -136,27 +140,41 @@ val iacaCert = X509Cert.fromPem(Res.readBytes("files/iaca_certificate.pem").deco
 ### **2. Understand the Core W3C DC Request Flow**
 
 The W3C Digital Credentials flow involves several cryptographic operations and network requests.
-Here's the core implementation:
+Here's the concrete implementation from this sample project:
 
 ```kotlin
-suspend fun requestCredentialFromVerifier(
+@OptIn(ExperimentalTime::class)
+private suspend fun doDcRequestFlow(
     appReaderKey: AsymmetricKey.X509Compatible,
     request: DocumentCannedRequest,
-    protocol: RequestProtocol,
-    format: CredentialFormat,
-    zkSystemRepository: ZkSystemRepository
-): DigitalCredentialResponse {
-    
+    showResponse: (
+        vpToken: JsonObject?,
+        deviceResponse: DataItem?,
+        sessionTranscript: DataItem,
+        nonce: ByteString?,
+        eReaderKey: EcPrivateKey?,
+        metadata: ShowResponseMetadata
+    ) -> Unit
+) {
+    require(request.mdocRequest != null) { "No ISO mdoc format in request" }
+
     // Step 1: Generate cryptographic materials
-    val nonce = ByteString(Random.Default.nextBytes(16))
-    val responseEncryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
+    // Random nonce for request/response correlation (prevents replay attacks)
+    val nonce = ByteString(Random.Default.nextBytes(NONCE_SIZE_BYTES))
     
+    // Ephemeral key for encrypting the response (ensures confidentiality)
+    val responseEncryptionKey = Crypto.createEcPrivateKey(RESPONSE_ENCRYPTION_CURVE)
+
     // Step 2: Get platform-specific app origin
     val origin = getAppToAppOrigin()
-    // Note: "web-origin" is the W3C DC specification format identifier, not a requirement for web browsers
+    // Note: "web-origin" is the W3C DC specification format identifier
     val clientId = "web-origin:$origin"
-    
-    // Step 3: Build list of requested claims
+
+    // Step 3: Configure protocol
+    val protocolDisplayName = "OpenID4VP 1.0"
+    val exchangeProtocolNames = listOf("openid4vp-v1-signed")
+
+    // Step 4: Build list of requested claims
     val claims = mutableListOf<MdocRequestedClaim>()
     request.mdocRequest!!.namespacesToRequest.forEach { namespaceRequest ->
         namespaceRequest.dataElementsToRequest.forEach { (mdocDataElement, intentToRetain) ->
@@ -169,32 +187,25 @@ suspend fun requestCredentialFromVerifier(
             )
         }
     }
-    
-    // Step 4: Build the W3C DC request
+
+    // Step 5: Build the W3C DC request object
     val dcRequestObject = VerificationUtil.generateDcRequestMdoc(
-        exchangeProtocols = protocol.exchangeProtocolNames,
+        exchangeProtocols = exchangeProtocolNames,
         docType = request.mdocRequest!!.docType,
         claims = claims,
         nonce = nonce,
         origin = origin,
         clientId = clientId,
         responseEncryptionKey = responseEncryptionKey.publicKey,
-        readerAuthenticationKey = if (protocol.signRequest) {
-            appReaderKey  // Sign request to prove verifier identity
-        } else {
-            null
-        },
-        zkSystemSpecs = if (request.mdocRequest!!.useZkp) {
-            zkSystemRepository.getAllZkSystemSpecs()
-        } else {
-            emptyList()
-        }
+        readerAuthenticationKey = appReaderKey,  // Sign request to prove verifier identity
+        zkSystemSpecs = emptyList()
     )
-    
-    // Step 5: Send request via W3C DC API
+
+    // Step 6: Send request via W3C DC API and measure response time
+    val t0 = Clock.System.now()
     val dcResponseObject = DigitalCredentials.Default.request(dcRequestObject)
-    
-    // Step 6: Decrypt and parse response
+
+    // Step 7: Decrypt and parse response
     val dcResponse = VerificationUtil.decryptDcResponse(
         response = dcResponseObject,
         nonce = nonce,
@@ -204,120 +215,269 @@ suspend fun requestCredentialFromVerifier(
             algorithm = responseEncryptionKey.curve.defaultKeyAgreementAlgorithm
         )
     )
-    
-    return dcResponse
+
+    // Step 8: Create metadata for analytics/logging
+    val metadata = ShowResponseMetadata(
+        engagementType = METADATA_ENGAGEMENT_TYPE,
+        transferProtocol = "$METADATA_TRANSFER_PROTOCOL_PREFIX ($protocolDisplayName)",
+        requestSize = Json.encodeToString(dcRequestObject).length.toLong(),
+        responseSize = Json.encodeToString(dcResponseObject).length.toLong(),
+        durationMsecNfcTapToEngagement = null,
+        durationMsecEngagementReceivedToRequestSent = null,
+        durationMsecRequestSentToResponseReceived = (Clock.System.now() - t0).inWholeMilliseconds
+    )
+
+    // Step 9: Handle response based on protocol format
+    when (dcResponse) {
+        is MdocApiDcResponse -> {
+            // ISO 18013-7 mDoc format response
+            showResponse(
+                null, 
+                dcResponse.deviceResponse, 
+                dcResponse.sessionTranscript, 
+                nonce, 
+                null, 
+                metadata
+            )
+        }
+
+        is OpenID4VPDcResponse -> {
+            // OpenID4VP format response
+            showResponse(
+                dcResponse.vpToken, 
+                null, 
+                dcResponse.sessionTranscript, 
+                nonce, 
+                null, 
+                metadata
+            )
+        }
+    }
 }
 ```
 
 **What does this do?**
 
-* **Step 1**: Generates a random nonce (prevents replay attacks) and creates an ephemeral encryption
-  key for the response
+* **Step 1**: Generates a random nonce (prevents replay attacks) and creates an ephemeral encryption key for the response
 * **Step 2**: Gets the platform-specific app identifier (Android: package + certificate fingerprint)
-* **Step 3**: Extracts the specific data elements (claims) being requested from the credential
-* **Step 4**: Builds the W3C DC request object with all necessary parameters
-* **Step 5**: Sends the request to the verifier server via the W3C DC API
-* **Step 6**: Decrypts the response using the ephemeral key and validates it
+* **Step 3**: Configures the exchange protocol (OpenID4VP in this example)
+* **Step 4**: Extracts the specific data elements (claims) being requested from the credential
+* **Step 5**: Builds the W3C DC request object with all necessary parameters including reader authentication
+* **Step 6**: Sends the request via W3C DC API and measures response time
+* **Step 7**: Decrypts the response using the ephemeral key and validates it
+* **Step 8**: Creates metadata for tracking request/response sizes and timing
+* **Step 9**: Handles the response based on format (mDoc API or OpenID4VP)
 
-Refer to
-the [W3CDCCredentialsRequestButton implementation](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L428-L536)
-for the complete reference implementation.
+**Key Configuration Constants** (defined at the top of `W3CDCCredentialsRequestButton.kt`):
+
+```kotlin
+private const val NONCE_SIZE_BYTES = 16
+private val RESPONSE_ENCRYPTION_CURVE = EcCurve.P256
+private const val METADATA_ENGAGEMENT_TYPE = "OS-provided CredentialManager API"
+private const val METADATA_TRANSFER_PROTOCOL_PREFIX = "W3C Digital Credentials"
+```
+
+See the **[complete implementation](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L427-L551)** for full context.
 
 ### **3. Set Up Reader Certificates**
 
-Before making requests, you need to initialize reader certificates that authenticate your app as a
-verifier:
+Before making requests, you need to initialize reader certificates that authenticate your app as a verifier. Here's the concrete implementation from this sample project:
+
+#### **Main Initialization Flow**
 
 ```kotlin
-suspend fun initializeReaderKeys(
-    keyStorage: StorageTable
-): AsymmetricKey.X509Certified {
-    val certsValidFrom = LocalDate.parse("2024-12-01").atStartOfDayIn(TimeZone.UTC)
-    val certsValidUntil = LocalDate.parse("2034-12-01").atStartOfDayIn(TimeZone.UTC)
+Button(onClick = {
+    coroutineScope.launch {
+        // Parse certificate validity dates from constants
+        val certsValidFrom = LocalDate.parse(CERT_VALID_FROM_DATE).atStartOfDayIn(TimeZone.UTC)
+        val certsValidUntil = LocalDate.parse(CERT_VALID_UNTIL_DATE).atStartOfDayIn(TimeZone.UTC)
 
-    // Initialize reader root certificate (CA)
-    val readerRootKey = initReaderRootCertificate(
-        keyStorage = keyStorage,
-        certsValidFrom = certsValidFrom,
-        certsValidUntil = certsValidUntil
-    )
+        // Step 1: Initialize the reader root key and certificate
+        // This is the "root of trust" for your verifier application
+        val readerRootKey = readerRootInit(
+            keyStorage = storageTable,
+            certsValidFrom = certsValidFrom,
+            certsValidUntil = certsValidUntil
+        )
 
-    // Initialize reader certificate (operational key)
-    val readerKey = initReaderCertificate(
-        keyStorage = keyStorage,
-        readerRootKey = readerRootKey,
-        certsValidFrom = certsValidFrom,
-        certsValidUntil = certsValidUntil
-    )
+        // Step 2: Initialize the reader key and certificate
+        // This is the operational key used to sign credential requests
+        val readerKey = readerInit(
+            keyStorage = storageTable,
+            readerRootKey = readerRootKey,
+            certsValidFrom = certsValidFrom,
+            certsValidUntil = certsValidUntil
+        )
 
-    return readerKey
+        // Step 3: Execute the credential request flow
+        doDcRequestFlow(
+            appReaderKey = readerKey,
+            request = requestOptions.first().sampleRequest,
+            showResponse = showResponse
+        )
+    }
+}) {
+    Text(text = text)
 }
+```
 
-private suspend fun initReaderCertificate(
+See the **[complete implementation](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L129-L197)** for full context.
+#### **Reader Certificate Initialization**
+
+```kotlin
+@OptIn(ExperimentalTime::class)
+private suspend fun readerInit(
     keyStorage: StorageTable,
     readerRootKey: AsymmetricKey.X509CertifiedExplicit,
     certsValidFrom: Instant,
     certsValidUntil: Instant
 ): AsymmetricKey.X509Certified {
-    // Try to retrieve existing key, or generate new one
-    val readerPrivateKey = keyStorage.get("readerKey")
+    // Try to retrieve existing reader private key from storage
+    // If not found, generate a new one
+    val readerPrivateKey = keyStorage.get(STORAGE_KEY_READER_PRIVATE_KEY)
         ?.let { EcPrivateKey.fromDataItem(Cbor.decode(it.toByteArray())) }
         ?: run {
-            val key = Crypto.createEcPrivateKey(EcCurve.P256)
-            keyStorage.insert("readerKey", ByteString(Cbor.encode(key.toDataItem())))
+            // Generate new P-256 private key
+            val key = Crypto.createEcPrivateKey(READER_KEY_CURVE)
+            // Persist to storage using CBOR encoding
+            keyStorage.insert(
+                STORAGE_KEY_READER_PRIVATE_KEY,
+                ByteString(Cbor.encode(key.toDataItem()))
+            )
             key
         }
 
-    // Try to retrieve existing certificate, or generate new one
-    val readerCert = keyStorage.get("readerCert")?.let {
+    // Try to retrieve existing reader certificate from storage
+    // If not found, generate a new one signed by the root key
+    val readerCert = keyStorage.get(STORAGE_KEY_READER_CERT)?.let {
         X509Cert.fromDataItem(Cbor.decode(it.toByteArray()))
-    } ?: run {
-        val cert = MdocUtil.generateReaderCertificate(
-            readerRootKey = readerRootKey,
-            readerKey = readerPrivateKey.publicKey,
-            subject = X500Name.fromName("CN=My App Verifier"),
-            serial = ASN1Integer.fromRandom(numBits = 128),
-            validFrom = certsValidFrom,
-            validUntil = certsValidUntil,
-        )
-        keyStorage.insert("readerCert", ByteString(Cbor.encode(cert.toDataItem())))
-        cert
     }
+        ?: run {
+            // Generate reader certificate signed by reader root
+            val cert = MdocUtil.generateReaderCertificate(
+                readerRootKey = readerRootKey,
+                readerKey = readerPrivateKey.publicKey,
+                subject = X500Name.fromName(CERT_SUBJECT_COMMON_NAME),
+                serial = ASN1Integer.fromRandom(numBits = CERT_SERIAL_NUMBER_BITS),
+                validFrom = certsValidFrom,
+                validUntil = certsValidUntil,
+            )
+            // Persist certificate to storage
+            keyStorage.insert(
+                STORAGE_KEY_READER_CERT,
+                ByteString(Cbor.encode(cert.toDataItem()))
+            )
+            cert
+        }
 
+    // Return the complete certificate chain: [Reader Cert, Reader Root Cert]
     return AsymmetricKey.X509CertifiedExplicit(
         certChain = X509CertChain(listOf(readerCert) + readerRootKey.certChain.certificates),
         privateKey = readerPrivateKey
     )
 }
+```
 
-private suspend fun initReaderRootCertificate(
+See the **[complete implementation](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L226-L275)** for full context.
+
+#### **Reader Root Certificate Initialization**
+
+```kotlin
+// From: W3CDCCredentialsRequestButton.kt
+@OptIn(ExperimentalTime::class, ExperimentalResourceApi::class)
+private suspend fun readerRootInit(
     keyStorage: StorageTable,
     certsValidFrom: Instant,
     certsValidUntil: Instant
 ): AsymmetricKey.X509CertifiedExplicit {
-    // Similar implementation for root certificate
-    // See full example in W3CDCCredentialsRequestButton.kt
-    // ...
+    // Load the bundled P-384 reader root key from resources
+    val readerRootKey = loadBundledReaderRootKey()
+
+    // Try to retrieve existing root private key
+    // If not found, use the bundled key
+    val readerRootPrivateKey = keyStorage.get(STORAGE_KEY_READER_ROOT_PRIVATE_KEY)
+        ?.let { EcPrivateKey.fromDataItem(Cbor.decode(it.toByteArray())) }
+        ?: run {
+            // Store bundled key for future use
+            keyStorage.insert(
+                STORAGE_KEY_READER_ROOT_PRIVATE_KEY,
+                ByteString(Cbor.encode(readerRootKey.toDataItem()))
+            )
+            readerRootKey
+        }
+
+    // Try to retrieve existing root certificate
+    // If not found, generate self-signed root certificate
+    val readerRootCert = keyStorage.get(STORAGE_KEY_READER_ROOT_CERT)
+        ?.let { X509Cert.fromDataItem(Cbor.decode(it.toByteArray())) }
+        ?: run {
+            // Generate self-signed root certificate
+            val bundledReaderRootCert = MdocUtil.generateReaderRootCertificate(
+                readerRootKey = AsymmetricKey.anonymous(readerRootKey),
+                subject = X500Name.fromName(CERT_SUBJECT_COMMON_NAME),
+                serial = ASN1Integer.fromRandom(numBits = CERT_SERIAL_NUMBER_BITS),
+                validFrom = certsValidFrom,
+                validUntil = certsValidUntil,
+                crlUrl = CERT_CRL_URL
+            )
+            // Persist root certificate
+            keyStorage.insert(
+                STORAGE_KEY_READER_ROOT_CERT,
+                ByteString(Cbor.encode(bundledReaderRootCert.toDataItem()))
+            )
+            bundledReaderRootCert
+        }
+
+    println("readerRootCert: ${readerRootCert.toPem()}")
+
+    return AsymmetricKey.X509CertifiedExplicit(
+        certChain = X509CertChain(listOf(readerRootCert)),
+        privateKey = readerRootPrivateKey
+    )
 }
+```
+
+See the **[complete implementation](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L303-L351)** for full context.
+
+**Key Configuration Constants** (from `W3CDCCredentialsRequestButton.kt`):
+
+```kotlin
+// Storage key names for persisting cryptographic materials
+private const val STORAGE_KEY_READER_ROOT_PRIVATE_KEY = "readerRootKey"
+private const val STORAGE_KEY_READER_ROOT_CERT = "readerRootCert"
+private const val STORAGE_KEY_READER_PRIVATE_KEY = "readerKey"
+private const val STORAGE_KEY_READER_CERT = "readerCert"
+
+// Certificate validity dates (10-year validity period)
+private const val CERT_VALID_FROM_DATE = "2024-12-01"
+private const val CERT_VALID_UNTIL_DATE = "2034-12-01"
+
+// Certificate subject and CRL configuration
+private const val CERT_SUBJECT_COMMON_NAME = "CN=OWF Multipaz Getting Started Reader Cert"
+private const val CERT_CRL_URL = 
+    "https://github.com/openwallet-foundation-labs/identity-credential/crl"
+
+// Cryptographic parameters
+private const val CERT_SERIAL_NUMBER_BITS = 128
+private val READER_KEY_CURVE = EcCurve.P256       // Reader operational key
+private val READER_ROOT_KEY_CURVE = EcCurve.P384  // Reader root key
 ```
 
 **What does this do?**
 
 * Creates or retrieves reader certificates from persistent storage
-* Reader root certificate acts as a self-signed CA
-* Reader certificate is signed by the root and used for actual requests
+* Reader root certificate acts as a self-signed CA (Certificate Authority)
+* Reader certificate is signed by the root and used for actual credential requests
 * Certificates are cached to avoid regenerating on every request
+* Uses P-256 for operational keys and P-384 for root keys
 
 **Key Concepts:**
 
 * **Reader Root Certificate**: The "root of trust" for your verifier app (like a CA)
 * **Reader Certificate**: The operational certificate used to sign credential requests
 * **Certificate Chain**: Links your reader cert back to the root cert for validation
-* **Persistent Storage**: Keys are stored so they persist across app sessions
-
-Refer to
-the [reader initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt#L311-L426)
-for complete implementation.
+* **Persistent Storage**: Keys are stored using CBOR encoding so they persist across app sessions
+* **Bundled Keys**: This sample uses pre-generated keys from resources for demonstration
 
 ### **4. Implement getAppToAppOrigin() for Android**
 
@@ -361,7 +521,7 @@ fun getAppToAppOrigin(): String {
 
 **Reference Links:**
 
-- [Android GetAppOrigin.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/androidMain/kotlin/org/multipaz/getstarted/GetAppOrigin.kt)
+- [Android Platform.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/androidMain/kotlin/org/multipaz/getstarted/Platform.kt)
 
 ### **5. Configure Android App Identifier**
 
@@ -434,11 +594,10 @@ try {
 
 Download these certificate files and add them to `/src/commonMain/composeResources/files`:
 
-* [reader_root_cert_multipaz_testapp.pem](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/reader_root_cert_multipaz_testapp.pem)
-* [reader_root_cert_multipaz_web_verifier.pem](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/reader_root_cert_multipaz_web_verifier.pem)
+* **[reader_root_cert_multipaz_testapp.pem](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/reader_root_cert_multipaz_testapp.pem)**
+* **[reader_root_cert_multipaz_web_verifier.pem](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/reader_root_cert_multipaz_web_verifier.pem)**
 
-Refer
-to [the trust manager initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L162-L249)
+Refer to **[the trust manager initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L205-L220)**
 for complete implementation.
 
 ### **7. Integrate Into Your UI**
@@ -504,7 +663,7 @@ fun HomeScreen(
     }
 }
 ```
-Refer to [HomeScreen.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/a56a2ba9f915d7c65ac31f8fc4a17600c5fd1873/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/HomeScreen.kt#L202C2-L245C10) file for context.
+Refer to **[HomeScreen.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/a56a2ba9f915d7c65ac31f8fc4a17600c5fd1873/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/HomeScreen.kt#L202C2-L245C10)** file for context.
 #### **Understanding the showResponse Callback**
 
 The `showResponse` callback receives six parameters with credential data:
@@ -529,173 +688,192 @@ data class ShowResponseMetadata(
     val durationMsecRequestSentToResponseReceived: Long     // Request-to-response latency
 )
 ```
-Refer to [ShowResponseMetadata.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/ShowResponseMetadata.kt) file for context.
+Refer to **[ShowResponseMetadata.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/ShowResponseMetadata.kt)** file for context.
 
-#### **Essential Integration Code**
+#### **Processing and Displaying the Response**
 
-**1. Initialize reader keys on button click:**
+After receiving the credential response, you need to display the data. Here's how this sample project handles it:
+
+##### **Navigation Setup in App.kt**
 
 ```kotlin
-// Parse certificate validity dates
-val certsValidFrom = LocalDate.parse("2024-12-01").atStartOfDayIn(TimeZone.UTC)
-val certsValidUntil = LocalDate.parse("2034-12-01").atStartOfDayIn(TimeZone.UTC)
-
-// Initialize reader root key and certificate (root of trust)
-val readerRootKey = readerRootInit(
-    keyStorage = storageTable,
-    certsValidFrom = certsValidFrom,
-    certsValidUntil = certsValidUntil
-)
-
-// Initialize reader key and certificate (operational key for signing requests)
-val readerKey = readerInit(
-    keyStorage = storageTable,
-    readerRootKey = readerRootKey,
-    certsValidFrom = certsValidFrom,
-    certsValidUntil = certsValidUntil
-)
+// From: App.kt
+composable<Destination.ShowResponseDestination> { backStackEntry ->
+    val destination = backStackEntry.toRoute<Destination.ShowResponseDestination>()
+    
+    // Decode the vpToken from base64url-encoded JSON
+    val vpToken = destination.vpResponse?.let {
+        if (it != "_") Json.decodeFromString<JsonObject>(
+            it.fromBase64Url().decodeToString()
+        ) else null
+    }
+    
+    // Decode the session transcript from base64url-encoded CBOR
+    val sessionTranscript =
+        Cbor.decode(destination.sessionTranscript.fromBase64Url())
+    
+    // Decode the nonce from base64url
+    val nonce = destination.nonce?.let { ByteString(it.fromBase64Url()) }
+    
+    // Navigate to the response screen
+    ShowResponseScreen(
+        vpToken = vpToken,
+        sessionTranscript = sessionTranscript,
+        nonce = nonce,
+        documentTypeRepository = documentTypeRepository,
+        goBack = {
+            navController.popBackStack()
+        }
+    )
+}
 ```
 
-**2. Execute the credential request flow:**
+See **[App.kt navigation setup](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L406-L425)** for full context.
+
+##### **Verifying and Parsing the Response**
+
+The `ShowResponseScreen` verifies the cryptographic integrity of the response and extracts the credential data:
 
 ```kotlin
-// Generate nonce and encryption key
-val nonce = ByteString(Random.Default.nextBytes(16))
-val responseEncryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
+// From: ShowResponseDestination.kt
+@Composable
+fun ShowResponseScreen(
+    vpToken: JsonObject?,
+    sessionTranscript: DataItem?,
+    nonce: ByteString?,
+    documentTypeRepository: DocumentTypeRepository?,
+    goBack: () -> Unit
+) {
+    val verificationResult =
+        remember { mutableStateOf<VerificationResult>(VerificationResult.Loading) }
+    val verificationResultValue = verificationResult.value
 
-// Get app origin and build client ID
-val origin = getAppToAppOrigin()
-val clientId = "web-origin:$origin"
-
-// Define protocol
-val exchangeProtocolNames = listOf("openid4vp-v1-signed")
-
-// Build claims list from your request
-val claims = mutableListOf<MdocRequestedClaim>()
-request.mdocRequest!!.namespacesToRequest.forEach { namespaceRequest ->
-    namespaceRequest.dataElementsToRequest.forEach { (mdocDataElement, intentToRetain) ->
-        claims.add(
-            MdocRequestedClaim(
-                namespaceName = namespaceRequest.namespace,
-                dataElementName = mdocDataElement.attribute.identifier,
-                intentToRetain = intentToRetain
+    // Verify and parse the response when screen loads
+    LaunchedEffect(Unit) {
+        val now = Clock.System.now()
+        if (sessionTranscript == null) {
+            verificationResult.value = VerificationResult.Error("Session transcript is null")
+            return@LaunchedEffect
+        }
+        try {
+            verificationResult.value = parseResponse(
+                now = now,
+                vpToken = vpToken,
+                sessionTranscript = sessionTranscript,
+                nonce = nonce,
+                documentTypeRepository = documentTypeRepository,
             )
+        } catch (e: Throwable) {
+            Logger.e(TAG, "Error parsing response", e)
+            verificationResult.value = VerificationResult.Error("Error parsing response")
+        }
+    }
+
+    // Display loading, error, or success state
+    when (verificationResultValue) {
+        is VerificationResult.Error -> Box(
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "Error: ${verificationResultValue.errorMessage}",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
+        is VerificationResult.Loading -> Box(
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator()
+        }
+
+        is VerificationResult.Success -> SuccessScreen(
+            values = verificationResultValue.documentValues,
+            goBack = goBack
         )
     }
 }
-
-// Generate the W3C DC request
-val dcRequestObject = VerificationUtil.generateDcRequestMdoc(
-    exchangeProtocols = exchangeProtocolNames,
-    docType = request.mdocRequest!!.docType,
-    claims = claims,
-    nonce = nonce,
-    origin = origin,
-    clientId = clientId,
-    responseEncryptionKey = responseEncryptionKey.publicKey,
-    readerAuthenticationKey = readerKey,
-    zkSystemSpecs = emptyList()
-)
-
-// Send request and decrypt response
-val dcResponseObject = DigitalCredentials.Default.request(dcRequestObject)
-val dcResponse = VerificationUtil.decryptDcResponse(
-    response = dcResponseObject,
-    nonce = nonce,
-    origin = origin,
-    responseEncryptionKey = AsymmetricKey.anonymous(
-        privateKey = responseEncryptionKey,
-        algorithm = responseEncryptionKey.curve.defaultKeyAgreementAlgorithm
-    )
-)
-
-// Handle the response
-when (dcResponse) {
-    is MdocApiDcResponse -> {
-        // Process mDoc format: dcResponse.deviceResponse, dcResponse.sessionTranscript
-    }
-    is OpenID4VPDcResponse -> {
-        // Process OpenID4VP format: dcResponse.vpToken, dcResponse.sessionTranscript
-    }
-}
 ```
 
-**3. Required helper functions for reader initialization:**
+##### **Response Verification Logic**
 
 ```kotlin
-private suspend fun readerInit(
-    keyStorage: StorageTable,
-    readerRootKey: AsymmetricKey.X509CertifiedExplicit,
-    certsValidFrom: Instant,
-    certsValidUntil: Instant
-): AsymmetricKey.X509Certified {
-    val readerPrivateKey = keyStorage.get("readerKey")
-        ?.let { EcPrivateKey.fromDataItem(Cbor.decode(it.toByteArray())) }
-        ?: Crypto.createEcPrivateKey(EcCurve.P256).also {
-            keyStorage.insert("readerKey", ByteString(Cbor.encode(it.toDataItem())))
-        }
+// From: ShowResponseDestination.kt
+@OptIn(ExperimentalTime::class)
+private suspend fun parseResponse(
+    now: Instant,
+    vpToken: JsonObject?,
+    sessionTranscript: DataItem,
+    nonce: ByteString?,
+    documentTypeRepository: DocumentTypeRepository?
+): VerificationResult {
+    val documentValues: MutableList<DocumentValue> = mutableListOf()
 
-    val readerCert = keyStorage.get("readerCert")
-        ?.let { X509Cert.fromDataItem(Cbor.decode(it.toByteArray())) }
-        ?: MdocUtil.generateReaderCertificate(
-            readerRootKey = readerRootKey,
-            readerKey = readerPrivateKey.publicKey,
-            subject = X500Name.fromName("CN=My Verifier App"),
-            serial = ASN1Integer.fromRandom(numBits = 128),
-            validFrom = certsValidFrom,
-            validUntil = certsValidUntil
-        ).also {
-            keyStorage.insert("readerCert", ByteString(Cbor.encode(it.toDataItem())))
-        }
+    // Verify the OpenID4VP response
+    val verifiedPresentations = if (vpToken != null) {
+        verifyOpenID4VPResponse(
+            now = now,
+            vpToken = vpToken,
+            sessionTranscript = sessionTranscript,
+            nonce = nonce!!,
+            documentTypeRepository = documentTypeRepository,
+            zkSystemRepository = null
+        )
+    } else {
+        throw IllegalStateException("vpToken must be non-null")
+    }
 
-    return AsymmetricKey.X509CertifiedExplicit(
-        certChain = X509CertChain(listOf(readerCert) + readerRootKey.certChain.certificates),
-        privateKey = readerPrivateKey
-    )
+    // Extract credential claims from verified presentations
+    verifiedPresentations.forEachIndexed { vpNum, verifiedPresentation ->
+        if (verifiedPresentation is MdocVerifiedPresentation) {
+            verifiedPresentation.issuerSignedClaims.forEach { claim ->
+                if (claim.attribute?.type == DocumentAttributeType.Picture) {
+                    // Handle image data (e.g., portrait photo)
+                    val image = decodeImage(claim.value.asBstr)
+                    documentValues.add(
+                        DocumentValue.ValueImage(image)
+                    )
+                } else {
+                    // Handle text data (e.g., name, date of birth, license number)
+                    documentValues.add(
+                        DocumentValue.ValueText(
+                            title = claim.attribute?.displayName ?: "Unknown",
+                            value = claim.render()
+                        )
+                    )
+                }
+            }
+        }
+    }
+    return VerificationResult.Success(documentValues)
 }
 
-private suspend fun readerRootInit(
-    keyStorage: StorageTable,
-    certsValidFrom: Instant,
-    certsValidUntil: Instant
-): AsymmetricKey.X509CertifiedExplicit {
-    val readerRootKey = loadBundledReaderRootKey()  // Load from PEM files in resources
-    
-    val readerRootPrivateKey = keyStorage.get("readerRootKey")
-        ?.let { EcPrivateKey.fromDataItem(Cbor.decode(it.toByteArray())) }
-        ?: readerRootKey.also {
-            keyStorage.insert("readerRootKey", ByteString(Cbor.encode(it.toDataItem())))
-        }
-
-    val readerRootCert = keyStorage.get("readerRootCert")
-        ?.let { X509Cert.fromDataItem(Cbor.decode(it.toByteArray())) }
-        ?: MdocUtil.generateReaderRootCertificate(
-            readerRootKey = AsymmetricKey.anonymous(readerRootPrivateKey),
-            subject = X500Name.fromName("CN=My Verifier App Root"),
-            serial = ASN1Integer.fromRandom(numBits = 128),
-            validFrom = certsValidFrom,
-            validUntil = certsValidUntil,
-            crlUrl = "https://example.com/crl"
-        ).also {
-            keyStorage.insert("readerRootCert", ByteString(Cbor.encode(it.toDataItem())))
-        }
-
-    return AsymmetricKey.X509CertifiedExplicit(
-        certChain = X509CertChain(listOf(readerRootCert)),
-        privateKey = readerRootPrivateKey
-    )
+private sealed class VerificationResult() {
+    data object Loading : VerificationResult()
+    data class Success(val documentValues: List<DocumentValue>) : VerificationResult()
+    data class Error(val errorMessage: String) : VerificationResult()
 }
 ```
 
-**Key Points:**
+See **[ShowResponseDestination.kt](https://github.com/openwallet-foundation/multipaz-samples/blob/ce8bec6f26159febd3ffa174b767184d5d9b3006/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/ShowResponseDestination.kt#L53-L287)** for the complete implementation.
 
-- **Reader keys are initialized once** and stored persistently using `StorageTable`
-- **Nonce and encryption key are generated per-request** for security
-- **The request flow** calls `DigitalCredentials.Default.request()` with proper parameters
-- **Response decryption** uses the ephemeral encryption key created during request
+**What this does:**
 
-See the [complete reference implementation](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/w3cdc/W3CDCCredentialsRequestButton.kt) for all details including constants and error handling
+* **Step 1**: Decodes the response data from base64url encoding
+* **Step 2**: Verifies the cryptographic signatures using `verifyOpenID4VPResponse()`
+* **Step 3**: Validates the session transcript binding between request and response
+* **Step 4**: Verifies the nonce matches to prevent replay attacks
+* **Step 5**: Extracts and parses individual claims (data elements) from the credential
+* **Step 6**: Separates image data (portraits) from text data (names, dates, etc.)
+* **Step 7**: Displays the verified credential data in a user-friendly UI
 
+**Key Security Features:**
+
+* **Cryptographic Verification**: All signatures are verified before displaying data
+* **Session Binding**: The session transcript ensures the response matches the request
+* **Nonce Validation**: Prevents replay attacks by verifying the nonce
+* **Type Safety**: Uses sealed classes to handle loading, success, and error states
+* **Error Handling**: Gracefully handles verification failures
 
 #### **Demo Screenshots**
 
@@ -713,4 +891,3 @@ See the [complete reference implementation](https://github.com/openwallet-founda
     <div style={{fontSize: '0.9em', marginTop: 4}}>Step 3</div>
   </div>
 </div>
-

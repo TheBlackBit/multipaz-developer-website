@@ -3,9 +3,9 @@ title: Face Detection & Verification
 sidebar_position: 4
 ---
 
-This guide shows how to add on-device face detection and verification to the Multipaz Getting Started Sample using FaceNet. You'll enable camera permissions, capture a selfie, compute a FaceNet embedding, and then match it in real time against faces detected from the camera.
+This guide shows how to add on-device face detection and verification to the Multipaz Getting Started Sample using FaceNet for **both Android and iOS platforms**. You'll enable camera permissions, capture a selfie, compute a FaceNet embedding, and then match it in real time against faces detected from the camera.
 
-What you’ll build:
+What you'll build:
 
 * A Selfie Check step to capture a face image
 * FaceNet embedding generation using a TFLite model
@@ -15,6 +15,8 @@ What you’ll build:
 ## **Dependencies**
 
 Add the Multipaz Vision library for face detection, face matching, and camera APIs. Multipaz Vision library is published from the [Multipaz Extras](https://github.com/openwallet-foundation/multipaz-extras) repository that contains additional libraries and functionality not included in the main [Multipaz](https://github.com/openwallet-foundation/multipaz) repository.
+
+### Common Dependencies (Kotlin Multiplatform)
 
 `gradle/libs.versions.toml`
 ```toml
@@ -41,34 +43,125 @@ kotlin {
 
 Refer to **[this code](https://github.com/openwallet-foundation/multipaz-samples/blob/d5c525b213ef3a544cbb78519a46c27b5c07bcc7/MultipazGettingStartedSample/composeApp/build.gradle.kts#L54)** for the complete example.
 
-## **Android Manifest: Camera Permissions**
+### iOS-Specific Dependencies (CocoaPods)
 
-Enable camera access on Android.
+For iOS, you need to configure native dependencies using CocoaPods. If you're an Android developer new to iOS, CocoaPods is similar to Gradle dependencies but for iOS/macOS projects.
+
+#### What is CocoaPods?
+
+CocoaPods is a dependency manager for iOS/macOS projects (similar to Gradle for Android). It uses:
+- **Podfile**: Defines your dependencies (like `build.gradle.kts`)
+- **Podfile.lock**: Locks dependency versions (like `gradle.lockfile`)
+- **Pods/**: Directory where dependencies are installed (like Gradle's cache)
+
+#### CocoaPods Configuration (Already Set Up)
+
+**Good news!** This sample project already has CocoaPods configured with all necessary dependencies. The `Podfile` at the root of the project includes:
+
+**Key dependencies (already configured):**
+- **`GoogleMLKit/FaceDetection`**: Provides face detection capabilities (equivalent to Android's ML Kit)
+- **`GoogleMLKit/BarcodeScanning`**: For QR code scanning functionality
+- **`TensorFlowLiteObjC`**: Runs TensorFlow Lite models on iOS
+  - `CoreML`: Apple's ML framework integration for better performance
+  - `Metal`: Apple's GPU acceleration framework
+
+You can view the complete `Podfile` configuration **[here in the repository](https://github.com/openwallet-foundation/multipaz-samples/blob/main/MultipazGettingStartedSample/Podfile)**.
+
+#### What You Need to Do
+
+1. **Install CocoaPods** (if not already installed on your Mac):
+
+```bash
+sudo gem install cocoapods
+```
+
+2. **Install the dependencies**:
+
+```bash
+# Navigate to your project root
+cd /path/to/MultipazGettingStartedSample
+
+# Install pods
+pod install
+```
+
+This command will:
+- Download and install all specified dependencies
+- Generate an `.xcworkspace` file
+- Create/update the `Pods/` directory
+
+**Important**: After running `pod install`, always open the `.xcworkspace` file (not the `.xcodeproj` file) in Xcode:
+
+```bash
+open iosApp.xcworkspace
+```
+
+## **Platform Permissions**
+
+Both Android and iOS require runtime permissions for camera access. Here's how to configure them for each platform:
+
+### Android: Camera Permissions
+
+Enable camera access on Android by adding permissions to your manifest.
 
 `composeApp/src/androidMain/AndroidManifest.xml`
 ```xml
-<!-- For FaceNet -->
+<!-- Camera hardware features -->
 <uses-feature android:name="android.hardware.camera"/>
 <uses-feature
     android:name="android.hardware.camera.autofocus"
     android:required="false" />
+
+<!-- Camera runtime permission -->
 <uses-permission android:name="android.permission.CAMERA"/>
 ```
 
 Refer to **[this AndroidManifest code](https://github.com/openwallet-foundation/multipaz-samples/blob/d5c525b213ef3a544cbb78519a46c27b5c07bcc7/MultipazGettingStartedSample/composeApp/src/androidMain/AndroidManifest.xml#L39-L43)** for the complete example.
 
-iOS: Add camera usage descriptions to your Info.plist if you plan to run on iOS:
+### iOS: Camera Permissions
 
-```plist
-<key>NSCameraUsageDescription</key>
-<string>Camera access is required for selfie capture and face verification.</string>
+iOS requires a **usage description** that explains to users why your app needs camera access. This is mandatory and your app will crash without it.
+
+`iosApp/iosApp/Info.plist`
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Camera permission description (required by Apple) -->
+    <key>NSCameraUsageDescription</key>
+    <string>Camera access is required for selfie capture and face verification.</string>
+    
+    <!-- Your other existing keys... -->
+</dict>
+</plist>
 ```
+
+**Important for Android developers:**
+- The `Info.plist` file in iOS is similar to `AndroidManifest.xml`
+- The usage description string is what users see in the permission dialog
+- Without this key, your app will crash when trying to access the camera
+- Make the description clear and user-friendly - Apple reviews these
+
+**How to edit Info.plist:**
+
+**Option 1: Using Xcode (Recommended)**
+1. Open `iosApp.xcworkspace` in Xcode
+2. Navigate to the `iosApp` target
+3. Select the "Info" tab
+4. Click the "+" button to add a new key
+5. Type "Privacy - Camera Usage Description" (it will auto-complete)
+6. Enter your description in the value field
+
+**Option 2: Direct XML editing**
+- Open `iosApp/iosApp/Info.plist` in any text editor
+- Add the `NSCameraUsageDescription` key as shown above
 
 ## **Model File**
 
-Place the FaceNet TFLite model in common resources:
+Place the FaceNet TFLite model in common resources so both platforms can access it:
 
-* Path: `composeApp/src/commonMain/resources/files/facenet_512.tflite`
+**Path**: `composeApp/src/commonMain/composeResources/files/facenet_512.tflite`
 
 This sample uses:
 
@@ -77,9 +170,15 @@ This sample uses:
 
 You can [**download the model from this link**](https://github.com/openwallet-foundation/multipaz-samples/blob/d5c525b213ef3a544cbb78519a46c27b5c07bcc7/MultipazGettingStartedSample/composeApp/src/commonMain/composeResources/files/facenet_512.tflite).
 
+**Why this location?**
+- `commonMain/composeResources/` is the Kotlin Multiplatform way to share resources across all platforms
+- The build system automatically packages this file for both Android and iOS
+- Android: Packaged into APK assets
+- iOS: Copied into the app bundle during the CocoaPods build phase
+
 ## **Initialization**
 
-Create and store the FaceNet model in your `App` singleton during initialization.
+Create and store the FaceNet model in your `App` singleton during initialization. This code is platform-independent and works on both Android and iOS.
 
 ```kotlin
 class App {
@@ -91,7 +190,7 @@ class App {
     suspend fun init() {
         // ... existing initializations ...
 
-        // Load FaceNet model
+        // Load FaceNet model from common resources
         val modelData = ByteString(*Res.readBytes("files/facenet_512.tflite"))
         faceMatchLiteRtModel =
             FaceMatchLiteRtModel(modelData, imageSquareSize = 160, embeddingsArraySize = 512)
@@ -99,13 +198,14 @@ class App {
 }
 ```
 
-* `FaceMatchLiteRtModel` is the data class for the platform independent LiteRT model handling.
+* `FaceMatchLiteRtModel` is the platform-independent data class for LiteRT model handling.
+* The model loading works identically on both platforms thanks to Compose Multiplatform's resource system.
 
 Refer to **[this initialization code](https://github.com/openwallet-foundation/multipaz-samples/blob/d5c525b213ef3a544cbb78519a46c27b5c07bcc7/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L297-L299)** for the complete example.
 
 ## **Runtime Permissions (Camera)**
 
-Use Multipaz Compose permission helpers to request the camera permission at runtime. `rememberCameraPermissionState` can be used for the same.
+Use Multipaz Compose permission helpers to request the camera permission at runtime. This works cross-platform with platform-specific implementations under the hood.
 
 ```kotlin
 class App {
@@ -113,6 +213,7 @@ class App {
 
     @Composable
     fun Content() {
+        // This composable handles platform-specific permission requests
         val cameraPermissionState = rememberCameraPermissionState()
 
         // ... existing UI for presentation
@@ -121,6 +222,9 @@ class App {
             Button(
                 onClick = {
                     coroutineScope.launch {
+                        // Launches platform-specific permission dialog
+                        // Android: System permission dialog
+                        // iOS: Native iOS permission alert with your Info.plist description
                         cameraPermissionState.launchPermissionRequest()
                     }
                 }
@@ -135,11 +239,19 @@ class App {
 }
 ```
 
+**Platform-specific behavior:**
+- **Android**: Shows standard Android permission dialog. User can grant/deny/deny permanently.
+- **iOS**: Shows native alert with your `NSCameraUsageDescription` text. First request only - iOS remembers the choice.
+
+**Testing permissions:**
+- **Android**: Can reset in Settings → Apps → Your App → Permissions
+- **iOS**: Can reset in Settings → Your App → Camera, or by uninstalling and reinstalling the app
+
 Refer to **[this permission request code](https://github.com/openwallet-foundation/multipaz-samples/blob/d5c525b213ef3a544cbb78519a46c27b5c07bcc7/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L501-L509)** for the complete example.
 
 ## **Selfie Capture Flow (Enrollment)**
 
-Use the built-in Selfie Check flow to capture a normalized face image for enrollment, then compute and store its FaceNet embedding.
+Use the built-in Selfie Check flow to capture a normalized face image for enrollment, then compute and store its FaceNet embedding. This entire flow works identically on both platforms.
 
 ```kotlin
 class App {
@@ -196,17 +308,23 @@ class App {
 }
 ```
 
-* `SelfieCheck` composable helps guide the user to capture a face image after performing certain liveness checks viz look up to the sides, smile, squeeze eyes etc.
-* `SelfieCheckViewModel `helps with the selfie check process – initialization, orchestration, and data exchange with UI.
-* The `SelfieCheckViewModel` returns the `capturedFaceImage` as a `ByteString` which we convert to a `ByteArray`.
-* This `ByteArray` is then passed to `decodeImage` function to decode it to an `ImageBitmap`.
-* After completion, use `getFaceEmbeddings` function to compute the FaceNet embedding from the captured `ImageBitmap` in a normalized values array.
+**How it works (cross-platform):**
+* `SelfieCheck` composable guides the user to capture a face image after performing liveness checks (look to the sides, smile, squeeze eyes, etc.)
+* `SelfieCheckViewModel` manages the selfie check process – initialization, orchestration, and data exchange with UI
+* The `SelfieCheckViewModel` returns the `capturedFaceImage` as a `ByteString` which we convert to a `ByteArray`
+* This `ByteArray` is passed to `decodeImage` function to decode it to an `ImageBitmap`
+* After completion, use `getFaceEmbeddings` function to compute the FaceNet embedding from the captured `ImageBitmap` in a normalized values array
+
+**Platform implementation details:**
+- **Android**: Uses Camera2 API under the hood with ML Kit for face detection
+- **iOS**: Uses AVFoundation (native camera framework) with ML Kit iOS for face detection
+- Both platforms produce identical embedding vectors, ensuring consistency
 
 Refer to **[this selfie check code](https://github.com/openwallet-foundation/multipaz-samples/blob/d5c525b213ef3a544cbb78519a46c27b5c07bcc7/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L510-L541)** for the complete example.
 
 ## **Live Face Matching**
 
-Once an enrollment embedding exists, we open a live camera preview using the “Camera” composable, detect faces per frame, align and crop the face region, compute embeddings, and calculate the similarity with the embeddings of the image we captured during selfie check.
+Once an enrollment embedding exists, we open a live camera preview using the "Camera" composable, detect faces per frame, align and crop the face region, compute embeddings, and calculate the similarity with the embeddings of the image we captured during selfie check.
 
 ```kotlin
 class App {
@@ -271,20 +389,30 @@ class App {
 }
 ```
 
-* The `Camera` composable from Multipaz SDK takes care of the camera operations initialization and camera preview composition. This takes a callback (`onFrameCaptured`) to invoke when a frame is captured with the frame object.
-* The `onFrameCaptured` function returns a `CameraFrame`. We then use `detectFaces` function to detect faces in the `CameraFrame` using MLKit. This function returns a list of `DetectedFace`s.
-* Now, we use the `extractFaceBitmap` function to align and crop the detected face, convert it to `FaceEmbedding` using `getFaceEmbeddings` function and use `FaceEmbedding#calculateSimilarity` function to calculate the similarity with the image we captured from the selfie check.
+**How it works (cross-platform):**
+* The `Camera` composable from Multipaz SDK handles camera initialization and preview rendering for both platforms
+* The `onFrameCaptured` callback is invoked for each camera frame with a `CameraFrame` object
+* Use `detectFaces` function to detect faces in the `CameraFrame` - internally uses Google ML Kit on both platforms
+* `extractFaceBitmap` aligns and crops the detected face
+* `getFaceEmbeddings` converts the face to a `FaceEmbedding`
+* `FaceEmbedding#calculateSimilarity` calculates cosine similarity with the enrolled face
+
+**Performance considerations:**
+- **Android**: Typically processes 15-30 FPS depending on device
+- **iOS**: Generally faster on newer devices with CoreML acceleration (20-60 FPS)
+- Both platforms support Metal/GPU acceleration for the TensorFlow Lite model
 
 Refer to **[this face matching code](https://github.com/openwallet-foundation/multipaz-samples/blob/d5c525b213ef3a544cbb78519a46c27b5c07bcc7/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L541-L591)** for the complete example.
 
-**Face Alignment and Cropping**
+## **Face Alignment and Cropping**
 
-For best matching with FaceNet, align the face so the eyes are level and crop a square around the face. Use landmarks and simple geometry to rotate and crop the face region, then scale to the model input size. You can copy paste the `extractFaceBitmap` for the same.
+For best matching with FaceNet, align the face so the eyes are level and crop a square around the face. Use landmarks and simple geometry to rotate and crop the face region, then scale to the model input size. You can copy-paste the `extractFaceBitmap` function below.
 
 ```kotlin
 class App {
     /**
      * Cut out the face square, rotate it to level eyes line, scale to the smaller size for face matching tasks.
+     * Works identically on Android and iOS.
      */
     private fun extractFaceBitmap(
         frameData: CameraFrame,
@@ -337,9 +465,11 @@ class App {
 }
 ```
 
+This algorithm works identically on both Android and iOS because it operates on platform-independent Compose types.
+
 Refer to **[this function code](https://github.com/openwallet-foundation/multipaz-samples/blob/d5c525b213ef3a544cbb78519a46c27b5c07bcc7/MultipazGettingStartedSample/composeApp/src/commonMain/kotlin/org/multipaz/getstarted/App.kt#L713-L761)** for the complete example.
 
-**Similarity Thresholds**
+## **Similarity Thresholds**
 
 `FaceEmbedding.calculateSimilarity` returns a similarity score in [0.0, 1.0]. Common FaceNet-based verification thresholds range from 0.5 – 0.8 depending on lighting and device quality.
 
@@ -350,18 +480,146 @@ Guidance:
 * Consider collecting multiple enrollment images and averaging embeddings for robustness.
 
 Example:
-```
+```kotlin
 val isMatch = similarity >= 0.7f
 ```
 
+**Platform-specific considerations:**
+- **Android**: Threshold may vary by device manufacturer (camera quality differences)
+- **iOS**: Generally more consistent across devices due to Apple's controlled hardware
+- Test on both low-end Android devices and older iPhones to find a balanced threshold
+
+## **Building and Running**
+
+### Android Build
+
+Standard Android build process:
+
+```bash
+# From Android Studio
+# Click "Run" or use Shift+F10
+
+# Or from command line
+./gradlew :composeApp:installDebug
+```
+
+### iOS Build
+
+iOS requires additional setup for CocoaPods integration:
+
+1. **First-time setup** (after cloning or adding iOS support):
+
+```bash
+# Generate the initial Kotlin framework
+./gradlew :composeApp:generateDummyFramework
+
+# Install CocoaPods dependencies
+pod install
+```
+
+2. **Open in Xcode**:
+
+```bash
+# Always open the workspace, not the project file
+open iosApp.xcworkspace
+```
+
+3. **Build and run**:
+   - Select a simulator or connected device from the scheme selector
+   - Click the "Play" button (⌘+R)
+
+**Common iOS build issues for Android developers:**
+
+| Issue | Solution |
+|-------|----------|
+| "Framework not found" | Run `./gradlew :composeApp:generateDummyFramework` then `pod install` |
+| "CocoaPods not installed" | Run `sudo gem install cocoapods` |
+| "Building for iOS Simulator, but linking in dylib built for iOS" | This is normal for arm64 Macs, the app still runs |
+| Info.plist missing camera key | Add `NSCameraUsageDescription` as shown in the permissions section |
+| Resources not found at runtime | Clean build folder in Xcode (⌘+Shift+K) and rebuild |
+
+**Tips for Android developers:**
+- Xcode's "Scheme" = Gradle's build variant (Debug/Release)
+- Xcode's "Target" = Gradle's module/subproject
+- `.xcworkspace` = workspace with all projects (yours + CocoaPods)
+- `.xcodeproj` = single project (don't open this when using CocoaPods)
+
 ## **Testing**
 
-* Install the app
-* Press the “selfie check” button
-* Perform the selfie check
-* Check the checkbox for consent
-* Press send button, wait for a second for the “face matching button to appear
-* Press the button
-* A live feed opens – you can see the match percentage in the screen
+### Testing on Both Platforms
 
-By following this guide, you enable secure, on-device face detection and verification using FaceNet within the Multipaz Getting Started Sample — covering permission handling, enrollment via Selfie Check, live face matching, and robust face alignment for improved accuracy.
+1. **Install the app** on both Android and iOS devices/emulators
+2. **Press the "selfie check" button**
+3. **Perform the selfie check** - follow on-screen liveness instructions
+4. **Check the checkbox** for consent
+5. **Press send button** - wait for a second for the "face matching" button to appear
+6. **Press the "Face Matching" button**
+7. **View live feed** - you can see the match percentage on the screen
+
+### Platform-Specific Testing Tips
+
+**Android:**
+- Test on multiple device manufacturers (Samsung, Pixel, OnePlus) - camera quality varies
+- Test in both portrait and landscape orientations
+- Use Android Studio's Device Manager for emulator testing (has virtual camera)
+
+**iOS:**
+- Test on both physical devices and simulators
+- iOS Simulator has limited camera support - use "Choose Photo" feature or test on real device
+- Test on different iPhone models - Face ID devices (iPhone X+) vs Touch ID devices
+- Use Xcode's "Take Screenshot" feature to debug face detection visually
+
+**Camera Testing Matrix:**
+
+| Scenario | Android | iOS |
+|----------|---------|-----|
+| Front camera selfie | ✅ | ✅ |
+| Low light conditions | Test on physical device | Test on physical device |
+| Glasses/accessories | ✅ | ✅ |
+| Multiple faces in frame | Should detect all | Should detect all |
+| Face at angle | May need better alignment | May need better alignment |
+
+### Debugging Face Detection
+
+If face detection isn't working:
+
+1. **Check permissions**: Make sure camera permission is granted
+2. **Check model loading**: Add logs in the `init()` function to confirm model loads
+3. **Check face detection**: Add logs in `detectFaces()` to see if faces are being detected
+4. **Check lighting**: Poor lighting significantly affects detection quality
+5. **Check distance**: Face should be 20-50cm from camera for best results
+
+**Android-specific debugging:**
+```kotlin
+Log.d("FaceNet", "Faces detected: ${faces.size}")
+Log.d("FaceNet", "Similarity: $similarity")
+```
+
+**iOS-specific debugging (in Xcode console)**:
+- Open "Debug Area" in Xcode (⌘+Shift+Y)
+- Print statements from Kotlin code appear in the console
+- Use Xcode's debugger for native code issues
+
+## **Summary**
+
+By following this guide, you enable secure, on-device face detection and verification using FaceNet within the Multipaz Getting Started Sample on **both Android and iOS platforms**. 
+
+**What you've learned:**
+- ✅ Setting up Kotlin Multiplatform with platform-specific dependencies
+- ✅ Configuring CocoaPods for iOS (essential for Android developers)
+- ✅ Handling camera permissions on both platforms
+- ✅ Using shared Kotlin code for face detection and verification
+- ✅ Platform-specific considerations and debugging tips
+
+**Key differences between platforms:**
+
+| Aspect | Android | iOS |
+|--------|---------|-----|
+| **Dependency Manager** | Gradle | CocoaPods |
+| **Permissions** | AndroidManifest.xml | Info.plist |
+| **Camera API** | Camera2 (under the hood) | AVFoundation (under the hood) |
+| **ML Framework** | ML Kit + TFLite | ML Kit + TFLite with CoreML |
+| **Build Tool** | Gradle | Xcode + Gradle (KMP) |
+| **Package Format** | APK/AAB | IPA |
+
+Despite these platform differences, the Multipaz Vision library abstracts away the complexity, allowing you to write **99% of your face verification code once in Kotlin** and have it work on both platforms!

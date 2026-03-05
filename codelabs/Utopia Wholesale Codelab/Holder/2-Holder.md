@@ -147,23 +147,23 @@ In your Koin module (`MultipazModule.kt`), configure the `PresentmentSource` whi
 //TODO: define PresentmentSource in Koin module
 single<PresentmentSource> {
     runBlocking {
-        if (DigitalCredentials.Default.available) {
-            DigitalCredentials.Default.startExportingCredentials(
+        val digitalCredentials = DigitalCredentials.getDefault()
+        if (digitalCredentials.registerAvailable) {
+            digitalCredentials.register(
                 documentStore = get(),
-                documentTypeRepository = get()
+                documentTypeRepository = get(),
             )
         }
 
         SimplePresentmentSource(
             documentStore = get(),
             documentTypeRepository = get(),
-            readerTrustManager = get(),
             preferSignatureToKeyAgreement = true,
             // Match domains used when storing credentials via OpenID4VCI
             domainMdocSignature = TestAppUtils.CREDENTIAL_DOMAIN_MDOC_USER_AUTH,
             domainMdocKeyAgreement = TestAppUtils.CREDENTIAL_DOMAIN_MDOC_MAC_USER_AUTH,
             domainKeylessSdJwt = TestAppUtils.CREDENTIAL_DOMAIN_SDJWT_KEYLESS,
-            domainKeyBoundSdJwt = TestAppUtils.CREDENTIAL_DOMAIN_SDJWT_USER_AUTH
+            domainKeyBoundSdJwt = TestAppUtils.CREDENTIAL_DOMAIN_SDJWT_USER_AUTH,
         )
     }
 }
@@ -172,12 +172,18 @@ single<PresentmentSource> {
 **Key points:**
 
 * `PresentmentSource` is configured as a singleton in the Koin module.
-* If `DigitalCredentials.Default` is available (Android), it starts exporting credentials for system-level credential sharing.
+* `DigitalCredentials.getDefault()` provides access to system-level digital credentials (Android-only).
+* Check `registerAvailable` before registering to ensure the device supports system-level credential sharing.
+* `digitalCredentials.register()` exports credentials from the `documentStore` for system-level access with the specified `documentTypeRepository`.
 * `SimplePresentmentSource` is created with all required dependencies injected via Koin's `get()` function:
   * `documentStore` - For accessing stored credentials
   * `documentTypeRepository` - For managing document types
-  * `readerTrustManager` - For verifying verifier certificates
-* Domain configurations match those used during credential storage via OpenID4VCI to ensure proper credential binding.
+* `preferSignatureToKeyAgreement = true` prioritizes signature-based authentication over key agreement.
+* Domain configurations match those used during credential storage via OpenID4VCI to ensure proper credential binding:
+  * `domainMdocSignature` - Domain for mDoc signature-based credentials
+  * `domainMdocKeyAgreement` - Domain for mDoc MAC/key agreement credentials
+  * `domainKeylessSdJwt` - Domain for keyless SD-JWT credentials
+  * `domainKeyBoundSdJwt` - Domain for key-bound SD-JWT credentials
 
 The `PresentmentModel` (which manages the presentation lifecycle and state transitions like `IDLE`, `CONNECTING`, `COMPLETED`, etc.) is also configured in the Koin module and can be injected wherever needed in your app.
 
@@ -200,51 +206,81 @@ _AccountScreen.kt_
 ```kotlin
 // TODO: show qr button when credentials are available
 Button(onClick = {
-                 val connectionMethods = listOf(
-                     MdocConnectionMethodBle(
-                         supportsPeripheralServerMode = false,
-                         supportsCentralClientMode = true,
-                         peripheralServerModeUuid = null,
-                         centralClientModeUuid = UUID.randomUUID(),
-                     )
-                 )
-                 onQrButtonClicked(
-                     MdocProximityQrSettings(
-                         availableConnectionMethods = connectionMethods,
-                         createTransportOptions = MdocTransportOptions(bleUseL2CAP = true)
-                     )
-                 )
-             }) {
-                 Text("Present mDL via QR")
-             }
-             Spacer(modifier = Modifier.height(16.dp))
-             Text(
-                 text = "The mDL is also available\n" +
-                         "via NFC engagement and W3C DC API\n" +
-                         "(Android-only right now)",
-                 textAlign = TextAlign.Center
-             )
-
+    val connectionMethods = mutableListOf<MdocConnectionMethod>()
+    val bleUuid = UUID.randomUUID()
+    if (bleCentralClientEnabled) {
+        connectionMethods.add(
+            MdocConnectionMethodBle(
+                supportsPeripheralServerMode = false,
+                supportsCentralClientMode = true,
+                peripheralServerModeUuid = null,
+                centralClientModeUuid = bleUuid,
+            ),
+        )
+    }
+    if (blePeripheralServerEnabled) {
+        connectionMethods.add(
+            MdocConnectionMethodBle(
+                supportsPeripheralServerMode = true,
+                supportsCentralClientMode = false,
+                peripheralServerModeUuid = bleUuid,
+                centralClientModeUuid = null,
+            ),
+        )
+    }
+    if (nfcDataTransferEnabled) {
+        connectionMethods.add(
+            MdocConnectionMethodNfc(
+                commandDataFieldMaxLength = 0xffff,
+                responseDataFieldMaxLength = 0x10000,
+            ),
+        )
+    }
+    onGenerateQrCode(
+        MdocProximityQrSettings(
+            availableConnectionMethods = connectionMethods,
+            createTransportOptions = MdocTransportOptions(
+                bleUseL2CAP = bleL2CapEnabled,
+                bleUseL2CAPInEngagement = bleL2CapInEngagementEnabled,
+            ),
+        ),
+    )
+}) {
+    Text("Present mDL via QR")
+}
+Spacer(modifier = Modifier.height(16.dp))
+Text(
+    text = "The mDL is also available\n" +
+            "via NFC engagement and W3C DC API\n" +
+            "(Android-only right now)",
+    textAlign = TextAlign.Center
+)
 ```
 
 When the user taps **Present mDL via QR**, the following sequence is triggered:
 
-1. **BLE is used to advertise available transport** using `MdocConnectionMethodBle`.
+1. A **mutable list of connection methods** is created to dynamically configure available transports based on enabled settings.
 
-2. A new **ephemeral EC key** is generated to protect session identity and engagement.
+2. A **shared BLE UUID** is generated for consistent device identification across connection methods.
 
-3. The device broadcasts its support for NFC and BLE (as available).
+3. **Connection methods are added conditionally** based on feature flags:
+   * **BLE Central Client mode** (`bleCentralClientEnabled`) - Device acts as central client connecting to peripheral verifiers.
+   * **BLE Peripheral Server mode** (`blePeripheralServerEnabled`) - Device acts as peripheral server accepting connections from central verifiers.
+   * **NFC Data Transfer** (`nfcDataTransferEnabled`) - Enables NFC-based credential presentation with configurable data field lengths.
 
-4. A **DeviceEngagement object** is created by `EngagementGenerator`, encoded, and presented as a QR code.
+4. **`onGenerateQrCode()`** is called with `MdocProximityQrSettings` containing:
+   * All configured `availableConnectionMethods`
+   * `MdocTransportOptions` specifying L2CAP support settings (`bleL2CapEnabled`, `bleL2CapInEngagementEnabled`)
 
-5. Verifiers can either:
+5. A new **ephemeral EC key** is generated to protect session identity and engagement.
 
-   * **Scan the QR code** to get the engagement info.
+6. A **DeviceEngagement object** is created, encoded, and presented as a QR code.
 
-   * **Tap via NFC** (if supported) to receive the engagement via proximity.
+7. Verifiers can either:
+   * **Scan the QR code** to get the engagement info and connect via the advertised BLE modes.
+   * **Use NFC Data Transfer** if enabled, for direct credential exchange over NFC.
 
-6. Once the verifier connects via BLE, a secure mdoc session is established.
-   MdocConnectionMethodBle is used for Ble connection
+8. Once the verifier connects via the negotiated transport (BLE or NFC), a secure mdoc session is established.
 
 
 
@@ -276,44 +312,12 @@ In this section, you'll learn how to enable **NFC credential sharing** in your U
 
 These components live in the **Android-specific source set** (`composeApp/src/androidMain/`):
 
-* `NfcActivity` – Handles the credential presentation lifecycle triggered by an NFC tap.  
 * `NdefService` – System-level service that binds the NFC engagement mechanism.  
 * `AndroidManifest.xml` – Declares the NFC capabilities and configures the app’s NFC role.
 
-#### 1. Define `NfcActivity.kt` (Presentation Flow)
-
-`NfcActivity` extends `MdocNfcPresentmentActivity` (used for ISO/IEC 18013-5:2021 presentment when using NFC engagement).
-
-This activity launches when the device is tapped against a verifier. It initializes the SDK through Koin-injected dependencies and returns the appropriate settings, including `appName`, `appIcon`, `promptModel`, `documentTypeRepository`, and `presentmentSource`.
-
-_`composeApp/src/androidMain/.../NfcActivity.kt`_
-
-```kotlin
-class NfcActivity : MdocNfcPresentmentActivity() {
-
-    private val promptModel: PromptModel by inject()
-    private val documentTypeRepository: DocumentTypeRepository by inject()
-    private val presentmentSource: PresentmentSource by inject()
-
-    override suspend fun getSettings(): Settings {
-        return Settings(
-            appName = APP_NAME,
-            appIcon = appIcon,
-            promptModel = promptModel,
-            applicationTheme = @Composable { content -> MaterialTheme { content() } },
-            documentTypeRepository = documentTypeRepository,
-            presentmentSource = presentmentSource,
-            imageLoader = ImageLoader.Builder(applicationContext)
-                .components { /* network loader omitted */ }
-                .build(),
-        )
-    }
-}
-```
-
 This activity wakes the device if necessary and securely presents credentials when the phone is tapped against a verifier.
 
-#### 2. Define `NdefService.kt` (Engagement Settings)
+#### 1. Define `NdefService.kt` (Engagement Settings)
 
 `NdefService` extends `MdocNdefService` (base class for implementing NFC engagement according to ISO/IEC 18013-5:2021).
 
@@ -323,30 +327,34 @@ _`composeApp/src/androidMain/.../NdefService.kt`_
 
 ```kotlin
 class NdefService : MdocNdefService() {
-    private lateinit var settingsModel: AppSettingsModel
-    private val promptModel: PromptModel by inject()
+    private val presentmentSource: PresentmentSource by inject()
+    private val settingsModel: AppSettingsModel by inject()
 
     override suspend fun getSettings(): Settings {
-
-        settingsModel = AppSettingsModel.create(
-            storage = Platform.storage,
-            readOnly = true
+        // Reset the presentment model with the source's document store and repository
+        PresentmentActivity.presentmentModel.reset(
+            documentStore = presentmentSource.documentStore,
+            documentTypeRepository = presentmentSource.documentTypeRepository,
+            preselectedDocuments = emptyList(),
         )
 
         return Settings(
+            source = presentmentSource,
+            promptModel = PresentmentActivity.promptModel,
+            presentmentModel = PresentmentActivity.presentmentModel,
+            activityClass = PresentmentActivity::class.java,
             sessionEncryptionCurve = settingsModel.presentmentSessionEncryptionCurve.value,
-            allowMultipleRequests = settingsModel.presentmentAllowMultipleRequests.value,
             useNegotiatedHandover = settingsModel.presentmentUseNegotiatedHandover.value,
             negotiatedHandoverPreferredOrder = settingsModel.presentmentNegotiatedHandoverPreferredOrder.value,
             staticHandoverBleCentralClientModeEnabled = settingsModel.presentmentBleCentralClientModeEnabled.value,
-            staticHandoverBlePeripheralServerModeEnabled = settingsModel.presentmentBlePeripheralServerModeEnabled.value,
+            staticHandoverBlePeripheralServerModeEnabled =
+                settingsModel.presentmentBlePeripheralServerModeEnabled.value,
             staticHandoverNfcDataTransferEnabled = settingsModel.presentmentNfcDataTransferEnabled.value,
-            transportOptions = MdocTransportOptions(
-                bleUseL2CAP = settingsModel.presentmentBleL2CapEnabled.value,
-                bleUseL2CAPInEngagement = settingsModel.presentmentBleL2CapInEngagementEnabled.value
-            ),
-            promptModel = promptModel,
-            presentmentActivityClass = NfcActivity::class.java
+            transportOptions =
+                MdocTransportOptions(
+                    bleUseL2CAP = settingsModel.presentmentBleL2CapEnabled.value,
+                    bleUseL2CAPInEngagement = settingsModel.presentmentBleL2CapInEngagementEnabled.value,
+                ),
         )
     }
 }
@@ -376,7 +384,7 @@ _`AndroidManifest.xml`_
 
 ```
 
-3. Configure NFC AID Filter(nfc\_ndef\_service.xml)
+#### 2. Configure NFC AID Filter(nfc\_ndef\_service.xml)
 
 Nfc\_ndef\_service.xml is under “res/xml”. To allow your Android device to act as an NFC Type 4 Tag and share credentials securely with a verifier, you must configure an AID (Application Identifier) filter. This is done in `nfc_ndef_service.xml`, which is referenced in your `AndroidManifest.xml`.
 

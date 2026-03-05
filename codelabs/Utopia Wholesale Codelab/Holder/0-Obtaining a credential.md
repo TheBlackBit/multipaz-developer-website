@@ -303,7 +303,6 @@ composeApp/src/androidMain/
 ├── kotlin/
 │   └── org/multipaz/samples/wallet/cmp/
 │       ├── MainActivity.kt              # Main activity
-│       ├── NfcActivity.kt               # NFC handling
 │       ├── CredmanActivity.kt           # Credential manager
 │       ├── NdefService.kt               # NDEF message service
 │       └── UtopiaSampleApplication.kt   # Application class
@@ -413,7 +412,7 @@ fun handleUrl(
 **Android** (in `MainActivity.kt`):
 
 ```kotlin
-//TODO: call processAppLinkInvocation(url)
+//TODO: implement HandleUrl for Android
 fun handleUrl(url: String) {
     handleUrl(
         url = url,

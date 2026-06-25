@@ -28,6 +28,12 @@ const cards = [
     icon: '🌟',
     link: '/showcase',
   },
+  {
+    title: 'Agentic',
+    description: 'AI agents for identity and commerce — MCP, x402, and more.',
+    icon: '🤖',
+    link: '/docs/agentic',
+  },
 ];
 
 export default function HomepageContent() {

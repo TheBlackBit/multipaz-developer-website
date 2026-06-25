@@ -80,6 +80,17 @@ const sidebars = {
       collapsed: false,
       collapsible: true,
     },
+    {
+      type: "category",
+      label: "Agentic",
+      link: {
+        type: "doc",
+        id: "agentic/agentic",
+      },
+      items: [],
+      collapsed: false,
+      collapsible: true,
+    },
     'sample-apps',
   ],
 };
